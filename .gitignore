@@ -1,0 +1,10 @@
+.idea
+.vscode
+venv/
+*~
+*.bak
+*.lock
+*.ulock
+
+# Do not commit Ghidra projects
+ghidra/

@@ -1,0 +1,1894 @@
+<HTML><BODY BGCOLOR=#ffffe0><FONT FACE=COURIER SIZE=3><STRONG><PRE>
+<A NAME="CODE:0000"></A>                            ;************************************************************************************************
+                            ;*          Metra M1T380 multimeter                                                             *
+                            ;*      MHB8748 ADC controller firmware                                                         *
+                            ;*                                                                                              *
+                            ;*          --- COPYRIGHT NOTICE ---                                                            *
+                            ;*                                                                                              *
+                            ;*        Extracted and documented by                                                           *
+                            ;*        Roman Dobrodii in 2022-2023                                                           *
+                            ;*                                                                                              *
+                            ;*  You should be aware of the fact that                                                        *
+                            ;*  although it looks and probably is                                                           *
+                            ;*  abandonware, Metra may still hold some                                                      *
+                            ;*  or all rights to the original FW.                                                           *
+                            ;*                                                                                              *
+                            ;*  All my personal contributions to this                                                       *
+                            ;*  can be used under Beerware terms to the                                                     *
+                            ;*  extent permitted by the applicable law:                                                     *
+                            ;*  - As long as you retain this notice you                                                     *
+                            ;*  can do whatever you want with this                                                          *
+                            ;*  stuff.                                                                                      *
+                            ;*  - If we meet some day, and you think                                                        *
+                            ;*  this  stuff is worth it, you can buy me                                                     *
+                            ;*  a beer in return.                                                                           *
+                            ;*                                                                                              *
+                            ;************************************************************************************************
+                            ;undefined RESET()
+                                                          ;XREF[1,0]:   Entry Point
+CODE:CODE:0000  99fa            ANL         P1,#0xfa                                ;DATA_OUT=1
+                                                                                    ;RDY_OUT=1
+<A NAME="CODE:0002"></A>                            OFF_CODE_0002:                ;XREF[0,1]:   Entry Point
+CODE:CODE:0002  9a40            ANL         P2,#0x40                                
+<A NAME="CODE:0004"></A>CODE:CODE:0004  8a20            ORL         P2,#0x20                                ;Enable Snul (integrator is zeroed)
+                                                                                    ;All other S* disabled
+<A NAME="CODE:0006"></A>                            OFF_CODE_0006:                ;XREF[0,1]:   Entry Point
+CODE:CODE:0006  2303            MOV         A,#0x3                                  
+<A NAME="CODE:0008"></A>CODE:CODE:0008  54fe            CALL        <A HREF="#CODE:02fe">set_mode</A>                                ;Set:
+                                                                                    ;  mode=3 (VDC range 150V)
+                                                                                    ;  fil=0
+<A NAME="CODE:000a"></A>CODE:CODE:000a  bb05            MOV         R3,#0x5                                 
+<A NAME="CODE:000c"></A>CODE:CODE:000c  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;5 ms delay
+<A NAME="CODE:000e"></A>                            ;#################################
+                            ;
+                            ;##     ##    ###    #### ##    ## 
+                            ;###   ###   ## ##    ##  ###   ## 
+                            ;#### ####  ##   ##   ##  ####  ## 
+                            ;## ### ## ##     ##  ##  ## ## ## 
+                            ;##     ## #########  ##  ##  #### 
+                            ;##     ## ##     ##  ##  ##   ### 
+                            ;##     ## ##     ## #### ##    ## 
+                            ;
+                            ;#################################
+                            ;
+                            ;Main loop
+                            ;---------
+                            main_loop:                    ;XREF[5,0]:   <A HREF="#CODE:0015">CODE:0015</A>,<A HREF="#CODE:0055">CODE:0055</A>,<A HREF="#CODE:01bf">CODE:01bf</A>,<A HREF="#CODE:02b7">CODE:02b7</A>
+                                                          ;             <A HREF="#CODE:03d5">CODE:03d5</A>
+CODE:CODE:000e  542d            CALL        <A HREF="#CODE:022d">comm_recv_1byte</A>                         ;void comm_recv_1byte(void)
+<A NAME="CODE:0010"></A>CODE:CODE:0010  a8              MOV         R0,A                                    ;R0=A=cmd
+<A NAME="CODE:0011"></A>CODE:CODE:0011  f217            JB0x7       <A HREF="#CODE:0017">cmd7_is_high</A>                            
+<A NAME="CODE:0013"></A>                            ;------
+                            ;A=cmd={0, X, fil, mode[4:0]}
+                            ;
+                            ;It's a "set mode" command, we
+                            ;configure MREG according to specified
+                            ;`mode` and `fil` arguments
+                            ;------
+                            cmd_set_mode:                 
+CODE:CODE:0013  54fe            CALL        <A HREF="#CODE:02fe">set_mode</A>                                ;void set_mode(void)
+<A NAME="CODE:0015"></A>CODE:CODE:0015  040e            JMP         <A HREF="#CODE:000e">main_loop</A>                               
+<A NAME="CODE:0017"></A>                            cmd7_is_high:                 ;XREF[1,0]:   <A HREF="#CODE:0011">CODE:0011</A>
+CODE:CODE:0017  5378            ANL         A,#0x78                                 
+<A NAME="CODE:0019"></A>CODE:CODE:0019  963d            JNZ         <A HREF="#CODE:003d">cmd_run_test</A>                            
+<A NAME="CODE:001b"></A>                            ;
+                            ;########################################
+                            ;
+                            ;cmd={1'b1, 4'b0000, dur[2:0]}
+                            ;
+                            ;It's a command to perform single
+                            ;ADC measurement (integration).
+                            ;
+                            ;dur[2:0] sets duration of measurement:
+                            ; 3'bXX1 - 1 SINE period
+                            ; 3'bX10 - 10 SINE periods
+                            ; 3'bX00 - 100 SINE periods  
+                            ;
+                            ;Set all regs except R0,R1,R6
+                            ;to 0b1111.1111
+                            ;----
+                            cmd_run_meas:                 
+CODE:CODE:001b  27              CLR         A                                       
+<A NAME="CODE:001c"></A>CODE:CODE:001c  37              CPL         A                                       
+<A NAME="CODE:001d"></A>CODE:CODE:001d  d5              SEL         RB1                                     
+<A NAME="CODE:001e"></A>CODE:CODE:001e  a8              MOV         R0,A                                    
+<A NAME="CODE:001f"></A>CODE:CODE:001f  a9              MOV         R1,A                                    
+<A NAME="CODE:0020"></A>CODE:CODE:0020  aa              MOV         R2,A                                    
+<A NAME="CODE:0021"></A>CODE:CODE:0021  ab              MOV         R3,A                                    
+<A NAME="CODE:0022"></A>CODE:CODE:0022  ac              MOV         R4,A                                    
+<A NAME="CODE:0023"></A>CODE:CODE:0023  ad              MOV         R5,A                                    
+<A NAME="CODE:0024"></A>CODE:CODE:0024  ae              MOV         R6,A                                    
+<A NAME="CODE:0025"></A>CODE:CODE:0025  af              MOV         R7,A                                    
+<A NAME="CODE:0026"></A>CODE:CODE:0026  c5              SEL         RB0                                     
+<A NAME="CODE:0027"></A>CODE:CODE:0027  aa              MOV         R2,A                                    
+<A NAME="CODE:0028"></A>CODE:CODE:0028  ab              MOV         R3,A                                    
+<A NAME="CODE:0029"></A>CODE:CODE:0029  ac              MOV         R4,A                                    
+<A NAME="CODE:002a"></A>CODE:CODE:002a  ad              MOV         R5,A                                    
+<A NAME="CODE:002b"></A>CODE:CODE:002b  af              MOV         R7,A                                    
+                            ;----
+                            ;
+<A NAME="CODE:002c"></A>CODE:CODE:002c  b920            MOV         R1,#0x20                                
+<A NAME="CODE:002e"></A>CODE:CODE:002e  b100            MOV         <A HREF="#INTMEM:20">@R1=>INTMEM:b_long_integration</A>,#0x0     ;*0x20=0
+                            ;---
+<A NAME="CODE:0030"></A>CODE:CODE:0030  f8              MOV         A,R0                                    ;A=cmd
+<A NAME="CODE:0031"></A>CODE:CODE:0031  67              RRC         A                                       
+<A NAME="CODE:0032"></A>CODE:CODE:0032  f63f            JC          <A HREF="#CODE:003f">run_meas_1per</A>                           ;dur==3'bXX1 -> T1 = 2 half periods
+<A NAME="CODE:0034"></A>CODE:CODE:0034  67              RRC         A                                       
+<A NAME="CODE:0035"></A>CODE:CODE:0035  f657            JC          <A HREF="#CODE:0057">run_meas_20per</A>                          ;dur==3'bX10 -> T1 = 20 half periods
+<A NAME="CODE:0037"></A>                            run_meas_200per:              
+CODE:CODE:0037  b101            MOV         <A HREF="#INTMEM:20">@R1=>INTMEM:b_long_integration</A>,#0x1     ;*0x20=1
+<A NAME="CODE:0039"></A>CODE:CODE:0039  b9c8            MOV         R1,#0xc8                                ;dur==3'bX00 -> T1 = 200 half periods
+<A NAME="CODE:003b"></A>                            ;Here r1=200
+CODE:CODE:003b  0441            JMP         <A HREF="#CODE:0041">run_meas_ll</A>                             
+<A NAME="CODE:003d"></A>                            ;
+                            ;#########################################
+                            ;
+                            ;cmd={1'b1, arg[3:0], 3'bXXX}
+                            ;A={1'b0, arg[3:0], 3'b0}
+                            ; where arg != 0
+                            ;
+                            ;It's a command to run a test program
+                            ;-----
+                            cmd_run_test:                 ;XREF[1,0]:   <A HREF="#CODE:0019">CODE:0019</A>
+CODE:CODE:003d  4493            JMP         <A HREF="#CODE:0293">run_test</A>                                ;undefined run_test()
+<A NAME="CODE:003f"></A>                            run_meas_1per:                ;XREF[1,0]:   <A HREF="#CODE:0032">CODE:0032</A>
+CODE:CODE:003f  b902            MOV         R1,#0x2                                 
+<A NAME="CODE:0041"></A>                            ;------
+                            ;
+                            ;R1 can be 2,20 or 200 here
+                            ;It determines duration of integration
+                            ;in SINE (mains frequency) half-periods
+                            ;
+                            run_meas_ll:                  ;XREF[2,0]:   <A HREF="#CODE:003b">CODE:003b</A>,<A HREF="#CODE:0059">CODE:0059</A>
+CODE:CODE:0041  343c            CALL        <A HREF="#CODE:013c">integrate</A>                               ;undefined integrate()
+<A NAME="CODE:0043"></A>                            ;
+                            ;{R5,R4,R3,R2} contains value
+                            ; 256*(T_Sn- - T_Sn+) + (T_Sn1- - T_Sn1+)
+                            ;expressed in 4-cycle units.
+                            ;We send {R4,R3,R2} to the host in
+                            ;little-endian order. R5 is simply
+                            ;discarded.
+                            ;
+CODE:CODE:0043  fa              MOV         A,R2                                    
+<A NAME="CODE:0044"></A>CODE:CODE:0044  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:0046"></A>CODE:CODE:0046  fb              MOV         A,R3                                    
+<A NAME="CODE:0047"></A>CODE:CODE:0047  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:0049"></A>CODE:CODE:0049  fc              MOV         A,R4                                    
+<A NAME="CODE:004a"></A>CODE:CODE:004a  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:004c"></A>                            ;
+                            ;Send {x,y} = CNT2(R7,R6) to the host
+                            ;in little-endian order.
+                            ;
+                            ;To get T_T1 from this, expressed in
+                            ;4-cycle units (same as T_Sn,T_Sn1
+                            ;value above), host CPU should compute
+                            ;the following:
+                            ; 
+                            ;T_T1 = 8 * {x,y} = 8 * CNT2(R7,R6)
+                            ;
+CODE:CODE:004c  fe              MOV         A,R6                                    
+<A NAME="CODE:004d"></A>CODE:CODE:004d  37              CPL         A                                       
+<A NAME="CODE:004e"></A>CODE:CODE:004e  17              INC         A                                       ;send (~R6)+1
+<A NAME="CODE:004f"></A>CODE:CODE:004f  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:0051"></A>CODE:CODE:0051  ff              MOV         A,R7                                    
+<A NAME="CODE:0052"></A>CODE:CODE:0052  37              CPL         A                                       ;send ~R7
+<A NAME="CODE:0053"></A>CODE:CODE:0053  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:0055"></A>                            ;
+                            ;Measurement completed
+                            ;-> wait for next command
+CODE:CODE:0055  040e            JMP         <A HREF="#CODE:000e">main_loop</A>                               
+                            ;-------
+                            ;
+<A NAME="CODE:0057"></A>                            run_meas_20per:               ;XREF[1,0]:   <A HREF="#CODE:0035">CODE:0035</A>
+CODE:CODE:0057  b914            MOV         R1,#0x14                                
+<A NAME="CODE:0059"></A>CODE:CODE:0059  0441            JMP         <A HREF="#CODE:0041">run_meas_ll</A>                             
+<A NAME="CODE:005b"></A>                            ;
+                            ;
+                            ;#######################################
+                            ;
+                            ;
+                            ;continuation of integrate()
+                            ;---------------------------
+                            T1_completed.0:               ;XREF[1,0]:   <A HREF="#CODE:01b6">CODE:01b6</A>
+CODE:CODE:005b  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:005c"></A>CODE:CODE:005c  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:005d"></A>                            T1_completed.1:               ;XREF[1,0]:   <A HREF="#CODE:01ae">CODE:01ae</A>
+CODE:CODE:005d  00              NOP                                                  
+<A NAME="CODE:005e"></A>                            T1_completed.2:               ;XREF[2,0]:   <A HREF="#CODE:01a7">CODE:01a7</A>,<A HREF="#CODE:01ac">CODE:01ac</A>
+CODE:CODE:005e  00              NOP                                                  
+<A NAME="CODE:005f"></A>CODE:CODE:005f  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:0060"></A>CODE:CODE:0060  9a40            ANL         P2,#0x40                                
+                            ;------
+                            ;P2=0b0X00.0000
+                            ;Sx, Sn+, Sn- and other switches
+                            ;are disabled from now on.
+                            ;T1 phase is finished.
+                            ;
+                            ;
+<A NAME="CODE:0062"></A>                            ;T2 and T3 stages use RB1 register bank.
+                            ;-------
+CODE:CODE:0062  d5              SEL         RB1                                     
+<A NAME="CODE:0063"></A>                            ;
+                            ;Vint within K2 range ?
+                            ;No need for T2 phase, jump directly to T3
+                            ;----
+CODE:CODE:0063  267d            JNT0        <A HREF="#CODE:007d">T3_begin</A>                                
+<A NAME="CODE:0065"></A>                            ;#######################################
+                            ;
+                            ;########  #######  
+                            ;   ##    ##     ## 
+                            ;   ##           ## 
+                            ;   ##     #######  
+                            ;   ##    ##        
+                            ;   ##    ##        
+                            ;   ##    ######### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;In T2 phase, Vint is outside of K2 range
+                            ;Integrator is discarged to bring Vint
+                            ;into K2 range by enabling Sn+ or Sn-
+                            ;switch, depending on sign of Vint
+                            ;
+                            ;Measurement results:
+                            ; T_T2_Sn- = 4cyc*CNT(R4')
+                            ; T_T2_Sn+ = 4cyc*CNT(R2')
+                            ;-----
+                            T2_begin:                     
+CODE:CODE:0065  4673            JNT1        <A HREF="#CODE:0073">T2_vint_positive</A>                        
+<A NAME="CODE:0067"></A>                            T2_vint_negative:             
+CODE:CODE:0067  8a08            ORL         P2,#0x8                                 ;T=2c
+                                                                                    ;Activate Sn-
+<A NAME="CODE:0069"></A>                            ;This loop waits while Vint is negative and
+                            ;outside of K2 range. Sn- switch is enabled,
+                            ;negative calibrated current flows into
+                            ;integrator, increasing Vint towards 0V.
+                            ;
+                            ;Time that Sn- is enabled is counted and it
+                            ;is part of measurement result.
+                            ;----
+                            T2_vint_negative_loop:        ;XREF[1,0]:   <A HREF="#CODE:006b">CODE:006b</A>
+CODE:CODE:0069  00              NOP                                                  ;T=1c
+<A NAME="CODE:006a"></A>CODE:CODE:006a  cc              DEC         R4                                      ;T=1c
+                                                                                    ;R4' -= 1
+<A NAME="CODE:006b"></A>CODE:CODE:006b  3669            JT0         <A HREF="#CODE:0069">T2_vint_negative_loop</A>                   ;T=2c
+<A NAME="CODE:006d"></A>CODE:CODE:006d  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:006e"></A>CODE:CODE:006e  9a40            ANL         P2,#0x40                                ;Disable all S* switches
+<A NAME="CODE:0070"></A>CODE:CODE:0070  cc              DEC         R4                                      ;R4' -= 1
+<A NAME="CODE:0071"></A>CODE:CODE:0071  047d            JMP         <A HREF="#CODE:007d">T3_begin</A>                                
+<A NAME="CODE:0073"></A>                            T2_vint_positive:             ;XREF[1,0]:   <A HREF="#CODE:0065">CODE:0065</A>
+CODE:CODE:0073  8a02            ORL         P2,#0x2                                 ;Activate Sn+
+<A NAME="CODE:0075"></A>                            ;This loop waits while Vint is positive and
+                            ;outside of K2 range. Sn+ switch is enabled,
+                            ;positive calibrated current flows into
+                            ;integrator, decreasing Vint towards 0V.
+                            ;
+                            ;Time that Sn+ is enabled is counted and it
+                            ;is part of measurement result.
+                            ;----
+                            T2_vint_positive_loop:        ;XREF[1,0]:   <A HREF="#CODE:0077">CODE:0077</A>
+CODE:CODE:0075  00              NOP                                                  
+<A NAME="CODE:0076"></A>CODE:CODE:0076  ca              DEC         R2                                      ;R2' -= 1
+<A NAME="CODE:0077"></A>CODE:CODE:0077  3675            JT0         <A HREF="#CODE:0075">T2_vint_positive_loop</A>                   
+<A NAME="CODE:0079"></A>CODE:CODE:0079  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:007a"></A>CODE:CODE:007a  9a40            ANL         P2,#0x40                                ;Disable all S* switches
+<A NAME="CODE:007c"></A>CODE:CODE:007c  ca              DEC         R2                                      ;R2' -= 1
+<A NAME="CODE:007d"></A>                            ;#######################################
+                            ;
+                            ;########  #######  
+                            ;   ##    ##     ## 
+                            ;   ##           ## 
+                            ;   ##     #######  
+                            ;   ##           ## 
+                            ;   ##    ##     ## 
+                            ;   ##     ####### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;In T3 phase, integrator is discharged to
+                            ;0V with small calibrated current via Sn1+
+                            ;or Sn1- switch (depending on Vint sign).
+                            ;We measure the time that the switch was
+                            ;enabled till Vint reaches 0V.
+                            ;
+                            ;Measurement results:
+                            ; T_T3_Sn1- = 6cyc + 4cyc*CNT1(R1',R0')
+                            ; T_T3_Sn1+ = 6cyc + 4cyc*CNT1(R7',R6')
+                            ;-----
+                            T3_begin:                     ;XREF[2,0]:   <A HREF="#CODE:0063">CODE:0063</A>,<A HREF="#CODE:0071">CODE:0071</A>
+CODE:CODE:007d  468e            JNT1        <A HREF="#CODE:008e">T3_vint_positive_loop</A>                   
+<A NAME="CODE:007f"></A>                            ;This loop waits while Vint is negative and
+                            ;till it crosses 0V (till K0 is triggered)
+                            ;outside of K2 range. Sn1- switch is enabled,
+                            ;negative calibrated current flows into
+                            ;integrator, increasing Vint towards 0V.
+                            ;
+                            ;Time that Sn1- is enabled is counted and it
+                            ;is part of measurement result.
+                            ;----
+                            T3_vint_negative_loop:        ;XREF[1,0]:   <A HREF="#CODE:008c">CODE:008c</A>
+CODE:CODE:007f  8a10            ORL         P2,#0x10                                ;T=2c Activate Sn1-
+<A NAME="CODE:0081"></A>CODE:CODE:0081  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0082"></A>                            T3_vint_negative_loop.1:      ;XREF[1,0]:   <A HREF="#CODE:0084">CODE:0084</A>
+CODE:CODE:0082  469d            JNT1        <A HREF="#CODE:009d">T3_completed</A>                            ;T=2c
+<A NAME="CODE:0084"></A>CODE:CODE:0084  e882            DJNZ        R0,<A HREF="#CODE:0082">T3_vint_negative_loop.1</A>              ;T=2c
+                            ;{R1',R0'} counts 4cyc (10us) mini-loops
+<A NAME="CODE:0086"></A>CODE:CODE:0086  9a40            ANL         P2,#0x40                                ;Deactivate Sn1-
+<A NAME="CODE:0088"></A>CODE:CODE:0088  469d            JNT1        <A HREF="#CODE:009d">T3_completed</A>                            
+<A NAME="CODE:008a"></A>CODE:CODE:008a  c9              DEC         R1                                      
+<A NAME="CODE:008b"></A>                            ;When iterating in big loop, account for T
+                            ;spent between T3_vint_negative_loop and
+                            ;T3_vint_negative_loop.1 (4cyc == 1 miniloop)
+                            ;by counting one extra miniloop
+                            ;---
+CODE:CODE:008b  c8              DEC         R0                                      
+<A NAME="CODE:008c"></A>CODE:CODE:008c  047f            JMP         <A HREF="#CODE:007f">T3_vint_negative_loop</A>                   
+<A NAME="CODE:008e"></A>                            T3_vint_positive_loop:        ;XREF[2,0]:   <A HREF="#CODE:007d">CODE:007d</A>,<A HREF="#CODE:009b">CODE:009b</A>
+CODE:CODE:008e  8a04            ORL         P2,#0x4                                 ;Activate Sn1+
+<A NAME="CODE:0090"></A>CODE:CODE:0090  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:0091"></A>                            T3_vint_positive_loop.1:      ;XREF[1,0]:   <A HREF="#CODE:0093">CODE:0093</A>
+CODE:CODE:0091  569d            JT1         <A HREF="#CODE:009d">T3_completed</A>                            
+<A NAME="CODE:0093"></A>CODE:CODE:0093  ee91            DJNZ        R6,<A HREF="#CODE:0091">T3_vint_positive_loop.1</A>              
+<A NAME="CODE:0095"></A>CODE:CODE:0095  9a40            ANL         P2,#0x40                                
+<A NAME="CODE:0097"></A>CODE:CODE:0097  569d            JT1         <A HREF="#CODE:009d">T3_completed</A>                            
+<A NAME="CODE:0099"></A>CODE:CODE:0099  cf              DEC         R7                                      
+<A NAME="CODE:009a"></A>CODE:CODE:009a  ce              DEC         R6                                      
+<A NAME="CODE:009b"></A>CODE:CODE:009b  048e            JMP         <A HREF="#CODE:008e">T3_vint_positive_loop</A>                   
+<A NAME="CODE:009d"></A>                            T3_completed:                 ;XREF[4,0]:   <A HREF="#CODE:0082">CODE:0082</A>,<A HREF="#CODE:0088">CODE:0088</A>,<A HREF="#CODE:0091">CODE:0091</A>,<A HREF="#CODE:0097">CODE:0097</A>
+CODE:CODE:009d  9a40            ANL         P2,#0x40                                ;Disable all S*
+<A NAME="CODE:009f"></A>CODE:CODE:009f  8a20            ORL         P2,#0x20                                ;Enable Snul
+                            ;-------
+                            ;Integration has been completed.
+                            ;Snul is enabled, other S* disabled.
+                            ;Integrator is being zeroed and stays there
+                            ;till next measurement or calibration.
+                            ;
+                            ;
+<A NAME="CODE:00a1"></A>                            ;#######################################
+                            ;
+                            ;########   #######   ######  ######## 
+                            ;##     ## ##     ## ##    ##    ##    
+                            ;##     ## ##     ## ##          ##    
+                            ;########  ##     ##  ######     ##    
+                            ;##        ##     ##       ##    ##    
+                            ;##        ##     ## ##    ##    ##    
+                            ;##         #######   ######     ##    
+                            ;
+                            ;#######################################
+                            ;
+                            ;Result postprocessing.
+                            ;Measurements from all stages are located in:
+                            ; R2  R3  R4  R5  R6  R7
+                            ; R0' R1' R2' R4' R6' R7'
+                            ;
+                            ; T_T1 = 32cyc * (CNT(R7,R6)-1)
+                            ; T_T1_Sn- = 32cyc * CNT(R5,R4)
+                            ; T_T1_Sn+ = 32cyc * CNT(R3,R2)
+                            ; T_T2_Sn- = 4cyc * CNT(R4')
+                            ; T_T2_Sn+ = 4cyc * CNT(R2')
+                            ; T_T3_Sn1- = 6cyc + 4cyc * CNT1(R1',R0')
+                            ; T_T3_Sn1+ = 6cyc + 4cyc * CNT1(R7',R6')
+                            ;
+                            ;There are some extra values:
+                            ; *0x20:
+                            ;   - 1 if integrating for 100 SINE periods
+                            ;   - 0 if integrating for 1 or 10 periods
+                            ;
+                            ;What are CNT(x,y) and CNT1(x,y) ?
+                            ;First of all, take a note that {x,y} pairs
+                            ;are all DJNZ-DEC downcounters. They
+                            ;usually work like this:
+                            ;   x = 255
+                            ;   y = 255
+                            ;   ...
+                            ;   DJNZ y, mylabel
+                            ;   DEC x
+                            ;  mylabel:
+                            ;   ...
+                            ;Their purpose is to count the number of
+                            ;times DJNZ was executed and give you up
+                            ;to 16 bits of range (up to 65535 counts)
+                            ;
+                            ;Normally you'd simply take {~x, ~y} and
+                            ;that will be your count value. However,
+                            ;their counting sequence has flaws:
+                            ;255 255
+                            ;255 254
+                            ;...
+                            ;255 1
+                            ;254 0  --- incorrect value, should be 255,0
+                            ;254 255
+                            ;254 254
+                            ;....
+                            ;254 1
+                            ;253 0  --- incorrect value, should be 254,0
+                            ;253 255
+                            ;...
+                            ;
+                            ;Those incorrect values are easy to
+                            ;fixup: `if (y==0) x+=1;`.
+                            ;
+                            ;CNT(x) for a single-register counter:
+                            ;  CNT(x) = ~x
+                            ;
+                            ;CNT(x,y) gives non-negative number of counts
+                            ;that {x,y} downcounter has counted:
+                            ;  CNT(x,y):
+                            ;    if (y==0) x+=1
+                            ;    return (~x, ~y)
+                            ;
+                            ;CNT1(x,y) is the same, but due to how
+                            ;counting in T3 phase is implemented, it's
+                            ;not possible to have incorrect values there
+                            ;(there are simply no y==0 combinations in
+                            ;the result), so fixup is not necessary:
+                            ;  CNT1(x,y):
+                            ;    return (~x, ~y)
+                            ;
+                            ;CNT2(x,y) is for T_T1 counter, which begins
+                            ;with a special value x=255, y=0. It doesn't
+                            ;suffer from "bugged" DJNZ-DEC sequence,
+                            ;conversion is straightforward:
+                            ;  CNT2(x,y):
+                            ;    return (~x,(~y)+1)
+                            ;---
+                            ;
+                            ;Since this code does a lot of register xchg
+                            ;operations, let's assign some immutable
+                            ;designations to original measured values.
+                            ;
+                            ;For Sn+, Sn1+ switch timings:
+                            ; T_T1_Sn+ = 32cyc * CNT(px,py)
+                            ; T_T2_Sn+ = 4cyc * CNT(pz)
+                            ; T_T3_Sn1+ = 6cyc + 4cyc * CNT1(pm,pl)
+                            ; px=R3, py=R2, pz=R2', pm=R7', pl=R6'
+                            ;
+                            ;For Sn-, Sn1- switch timings:
+                            ; T_T1_Sn- = 32cyc * CNT(nx,ny)
+                            ; T_T2_Sn- = 4cyc * CNT(nz)
+                            ; T_T3_Sn1- = 6cyc + 4cyc * CNT1(nm,nl)
+                            ; nx=R5, ny=R4, nz=R4', nm=R1', nl=R0'
+                            ;
+                            ;-----
+                            postprocess_results:          
+CODE:CODE:00a1  99f7            ANL         P1,#0xf7                                ;Set P1[3]=0
+                                                                                    ;This pin is unused, so maybe for debug?
+<A NAME="CODE:00a3"></A>CODE:CODE:00a3  14f5            CALL        <A HREF="#CODE:00f5">covert_and_add_Sn_durations</A>             ;undefined covert_and_add_Sn_durations()
+                            ;-----
+                            ;After call:
+                            ;- BS=RB0 (RET-function, PSW not restored)
+                            ;- R1=0x21=&t0
+                            ;- A = ~pl
+                            ;- {t0, R3, R2} = {pa, pb, pc} = 
+                            ;  8*CNT(px,py) + ~pz + ~pm
+<A NAME="CODE:00a5"></A>CODE:CODE:00a5  a8              MOV         R0,A                                    ;R0=~R6'=~pl
+<A NAME="CODE:00a6"></A>CODE:CODE:00a6  f1              MOV         A,@R1                                   ;A=t0
+<A NAME="CODE:00a7"></A>CODE:CODE:00a7  19              INC         R1                                      
+<A NAME="CODE:00a8"></A>CODE:CODE:00a8  19              INC         R1                                      
+<A NAME="CODE:00a9"></A>CODE:CODE:00a9  a1              MOV         @R1,A                                   ;*0x23=t1=t0
+<A NAME="CODE:00aa"></A>CODE:CODE:00aa  fa              MOV         A,R2                                    
+<A NAME="CODE:00ab"></A>CODE:CODE:00ab  2c              XCH         A,R4                                    
+<A NAME="CODE:00ac"></A>CODE:CODE:00ac  aa              MOV         R2,A                                    ;R2=ny
+                                                                                    ;R4=pc
+<A NAME="CODE:00ad"></A>CODE:CODE:00ad  fb              MOV         A,R3                                    
+<A NAME="CODE:00ae"></A>CODE:CODE:00ae  2d              XCH         A,R5                                    
+<A NAME="CODE:00af"></A>CODE:CODE:00af  ab              MOV         R3,A                                    ;R3=nx
+                                                                                    ;R5=pb
+<A NAME="CODE:00b0"></A>CODE:CODE:00b0  d5              SEL         RB1                                     
+<A NAME="CODE:00b1"></A>CODE:CODE:00b1  fc              MOV         A,R4                                    
+<A NAME="CODE:00b2"></A>CODE:CODE:00b2  2a              XCH         A,R2                                    
+<A NAME="CODE:00b3"></A>CODE:CODE:00b3  ac              MOV         R4,A                                    ;R2'=nz
+                                                                                    ;R4'=pz
+<A NAME="CODE:00b4"></A>CODE:CODE:00b4  f9              MOV         A,R1                                    
+<A NAME="CODE:00b5"></A>CODE:CODE:00b5  2f              XCH         A,R7                                    
+<A NAME="CODE:00b6"></A>CODE:CODE:00b6  a9              MOV         R1,A                                    ;R1'=pm
+                                                                                    ;R7'=nm
+<A NAME="CODE:00b7"></A>CODE:CODE:00b7  f8              MOV         A,R0                                    
+<A NAME="CODE:00b8"></A>CODE:CODE:00b8  2e              XCH         A,R6                                    
+<A NAME="CODE:00b9"></A>CODE:CODE:00b9  a8              MOV         R0,A                                    ;R0'=pl
+                                                                                    ;R6'=nl
+<A NAME="CODE:00ba"></A>CODE:CODE:00ba  14f5            CALL        <A HREF="#CODE:00f5">covert_and_add_Sn_durations</A>             ;undefined covert_and_add_Sn_durations()
+                            ;-----
+                            ;After call:
+                            ;- BS=RB0 (RET-function, PSW not restored)
+                            ;- R1=0x21=&t0
+                            ;- A = ~nl
+                            ;- {t0, R3, R2} = {na, nb, nc} =
+                            ;  8*CNT(nx,ny) + ~nz + ~nm
+<A NAME="CODE:00bc"></A>CODE:CODE:00bc  28              XCH         A,R0                                    ;R0=~nl
+                                                                                    ;A=~pl
+<A NAME="CODE:00bd"></A>CODE:CODE:00bd  37              CPL         A                                       ;A=pl
+<A NAME="CODE:00be"></A>CODE:CODE:00be  68              ADD         A,R0                                    ;A=pl + ~nl
+<A NAME="CODE:00bf"></A>CODE:CODE:00bf  2a              XCH         A,R2                                    ;R2=pl + ~nl
+                                                                                    ;A=nc
+<A NAME="CODE:00c0"></A>CODE:CODE:00c0  2c              XCH         A,R4                                    ;R4=nc
+                                                                                    ;A=pc
+<A NAME="CODE:00c1"></A>CODE:CODE:00c1  37              CPL         A                                       ;A=~pc
+<A NAME="CODE:00c2"></A>CODE:CODE:00c2  7c              ADDC        A,R4                                    ;{A,R2}={nc+~pc,pl+~nl}
+<A NAME="CODE:00c3"></A>CODE:CODE:00c3  2b              XCH         A,R3                                    ;{R3,R2}={nc+~pc,pl+~nl}
+                                                                                    ;A=nb
+<A NAME="CODE:00c4"></A>CODE:CODE:00c4  2d              XCH         A,R5                                    ;R5=nb
+                                                                                    ;A=pb
+<A NAME="CODE:00c5"></A>CODE:CODE:00c5  37              CPL         A                                       ;A=~pb
+<A NAME="CODE:00c6"></A>CODE:CODE:00c6  7d              ADDC        A,R5                                    ;{A,R3,R2}={nb+~pb,nc+~pc,pl+~nl}
+<A NAME="CODE:00c7"></A>CODE:CODE:00c7  ac              MOV         R4,A                                    ;{R4,R3,R2}={nb+~pb,nc+~pc,pl+~nl}
+<A NAME="CODE:00c8"></A>CODE:CODE:00c8  19              INC         R1                                      
+<A NAME="CODE:00c9"></A>CODE:CODE:00c9  19              INC         R1                                      
+<A NAME="CODE:00ca"></A>CODE:CODE:00ca  f1              MOV         A,@R1                                   ;A=t1=pa
+<A NAME="CODE:00cb"></A>CODE:CODE:00cb  37              CPL         A                                       ;A=~pa
+<A NAME="CODE:00cc"></A>CODE:CODE:00cc  c9              DEC         R1                                      
+<A NAME="CODE:00cd"></A>CODE:CODE:00cd  c9              DEC         R1                                      
+<A NAME="CODE:00ce"></A>CODE:CODE:00ce  71              ADDC        A,@R1                                   ;{A,R4,R3,R2}=
+                                                                                    ;    {na+~pa,nb+~pb,nc+~pc,pl+~nl}
+<A NAME="CODE:00cf"></A>CODE:CODE:00cf  ad              MOV         R5,A                                    ;{R5,R4,R3,R2}=
+                                                                                    ;    {na+~pa,nb+~pb,nc+~pc,pl+~nl}
+<A NAME="CODE:00d0"></A>                            ;`x+~y+1` becomes `x-y`
+                            ;(2's complement: -x=~x+1)
+CODE:CODE:00d0  fa              MOV         A,R2                                    
+<A NAME="CODE:00d1"></A>CODE:CODE:00d1  0301            ADD         A,#0x1                                  
+<A NAME="CODE:00d3"></A>CODE:CODE:00d3  aa              MOV         R2,A                                    
+<A NAME="CODE:00d4"></A>CODE:CODE:00d4  fb              MOV         A,R3                                    
+<A NAME="CODE:00d5"></A>CODE:CODE:00d5  1300            ADDC        A,#0x0                                  
+<A NAME="CODE:00d7"></A>CODE:CODE:00d7  ab              MOV         R3,A                                    
+<A NAME="CODE:00d8"></A>CODE:CODE:00d8  fc              MOV         A,R4                                    
+<A NAME="CODE:00d9"></A>CODE:CODE:00d9  1300            ADDC        A,#0x0                                  
+<A NAME="CODE:00db"></A>CODE:CODE:00db  ac              MOV         R4,A                                    
+<A NAME="CODE:00dc"></A>CODE:CODE:00dc  fd              MOV         A,R5                                    
+<A NAME="CODE:00dd"></A>CODE:CODE:00dd  1300            ADDC        A,#0x0                                  
+<A NAME="CODE:00df"></A>CODE:CODE:00df  ad              MOV         R5,A                                    
+                            ;-----
+                            ;X = {R5,R4,R3,R2}
+                            ;  = {na-pa,nb-pb,nc-pc,pl-nl}
+                            ;  = 256*8*(CNT(nx,ny) - CNT(px,py))
+                            ;    + 256*(CNT(nz) - CNT(pz))
+                            ;    + CNT(nm,nl) - CNT(pm,pl)
+                            ;
+                            ;Which corresponds to:
+                            ;X * 4cyc =
+                            ;   256*( T_T1_Sn- + T_T2_Sn-
+                            ;         -T_T1_Sn+ - T_T2_Sn+)
+                            ;   + (T_T3_Sn1- - T_T3_Sn1+)
+                            ;This addition of 256*T_Sn+T_Sn1 makes
+                            ;sense, because Sn-injected current is
+                            ;approx. 256 times stronger than Sn1
+                            ;current.
+<A NAME="CODE:00e0"></A>CODE:CODE:00e0  c9              DEC         R1                                      
+<A NAME="CODE:00e1"></A>CODE:CODE:00e1  f1              MOV         A,@R1                                   ;A=*0x20
+                            ;*0x20 is 1 for long integration time
+                            ;and 0 for short integration time
+                            ;
+                            ;If it is 1, we right-shift the result
+                            ;by 3 bits, because in the end we do not
+                            ;transmit R5 and thus all our data must
+                            ;fit into R4~R2 (that's how manual
+                            ;explains it, I haven't check if it really
+                            ;fits or not)
+<A NAME="CODE:00e2"></A>CODE:CODE:00e2  c6f4            JZ          <A HREF="#CODE:00f4">return</A>                                  
+<A NAME="CODE:00e4"></A>CODE:CODE:00e4  b903            MOV         R1,#0x3                                 
+<A NAME="CODE:00e6"></A>                            rshift_result_by_3_loop:      ;XREF[1,0]:   <A HREF="#CODE:00f2">CODE:00f2</A>
+CODE:CODE:00e6  fd              MOV         A,R5                                    
+<A NAME="CODE:00e7"></A>CODE:CODE:00e7  67              RRC         A                                       
+<A NAME="CODE:00e8"></A>CODE:CODE:00e8  ad              MOV         R5,A                                    
+<A NAME="CODE:00e9"></A>CODE:CODE:00e9  fc              MOV         A,R4                                    
+<A NAME="CODE:00ea"></A>CODE:CODE:00ea  67              RRC         A                                       
+<A NAME="CODE:00eb"></A>CODE:CODE:00eb  ac              MOV         R4,A                                    
+<A NAME="CODE:00ec"></A>CODE:CODE:00ec  fb              MOV         A,R3                                    
+<A NAME="CODE:00ed"></A>CODE:CODE:00ed  67              RRC         A                                       
+<A NAME="CODE:00ee"></A>CODE:CODE:00ee  ab              MOV         R3,A                                    
+<A NAME="CODE:00ef"></A>CODE:CODE:00ef  fa              MOV         A,R2                                    
+<A NAME="CODE:00f0"></A>CODE:CODE:00f0  67              RRC         A                                       
+<A NAME="CODE:00f1"></A>CODE:CODE:00f1  aa              MOV         R2,A                                    ;{R5,R4,R3,R2} >>= 1
+<A NAME="CODE:00f2"></A>CODE:CODE:00f2  e9e6            DJNZ        R1,<A HREF="#CODE:00e6">rshift_result_by_3_loop</A>              
+<A NAME="CODE:00f4"></A>                            ;Finally, return from integrate()
+                            ;-----
+                            return:                       ;XREF[1,0]:   <A HREF="#CODE:00e2">CODE:00e2</A>
+CODE:CODE:00f4  83              RET                                                  
+<A NAME="CODE:00f5"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined covert_and_add_Sn_durations()
+                            ;-IN
+                            ;R2
+                            ;R3
+                            ;
+                                                          ;XREF[2,0]:   <A HREF="#CODE:00a3">CODE:00a3</A>,<A HREF="#CODE:00ba">CODE:00ba</A>
+CODE:CODE:00f5  c5              SEL         RB0                                     
+<A NAME="CODE:00f6"></A>CODE:CODE:00f6  b922            MOV         R1,#0x22                                
+<A NAME="CODE:00f8"></A>CODE:CODE:00f8  b103            MOV         <A HREF="#INTMEM:22">@R1=>INTMEM:k</A>,#0x3                      ;k=*0x22=3
+<A NAME="CODE:00fa"></A>CODE:CODE:00fa  c9              DEC         R1                                      
+<A NAME="CODE:00fb"></A>CODE:CODE:00fb  b100            MOV         <A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>,#0x0                     ;t0=*0x21=0
+                            ;----
+                            ;
+<A NAME="CODE:00fd"></A>                            ;R3,R2 = CNT(R3,R2)
+                            ;See some explanation about CNT and CNT1
+                            ;functions above. In short, this is to fix
+                            ;"bugged" counting sequence of DJNZ+DEC
+                            ;downcounter.
+                            ;-----
+CODE:CODE:00fd  fa              MOV         A,R2                                    
+<A NAME="CODE:00fe"></A>CODE:CODE:00fe  37              CPL         A                                       
+<A NAME="CODE:00ff"></A>CODE:CODE:00ff  aa              MOV         R2,A                                    ;R2=~R2
+<A NAME="CODE:0100"></A>CODE:CODE:0100  17              INC         A                                       
+<A NAME="CODE:0101"></A>CODE:CODE:0101  97              CLR         C                                       
+<A NAME="CODE:0102"></A>CODE:CODE:0102  9605            JNZ         <A HREF="#CODE:0105">cnt_no_fixup</A>                            
+<A NAME="CODE:0104"></A>                            cnt_fixup:                    
+CODE:CODE:0104  a7              CPL         C                                       ;C=1 if original R2==0
+                                                                                    ;
+<A NAME="CODE:0105"></A>                            cnt_no_fixup:                 ;XREF[1,0]:   <A HREF="#CODE:0102">CODE:0102</A>
+CODE:CODE:0105  27              CLR         A                                       
+<A NAME="CODE:0106"></A>CODE:CODE:0106  7b              ADDC        A,R3                                    ;A=R3+1 if original R2==0
+                                                                                    ;else A=R3
+<A NAME="CODE:0107"></A>CODE:CODE:0107  37              CPL         A                                       
+<A NAME="CODE:0108"></A>CODE:CODE:0108  ab              MOV         R3,A                                    ;R3=~R3
+                                                                                    ;or ~(R3+1) with fixup applied
+                            ;-----
+                            ;
+                            ;
+<A NAME="CODE:0109"></A>                            loop0:                        ;XREF[1,0]:   <A HREF="#CODE:0117">CODE:0117</A>
+CODE:CODE:0109  fa              MOV         A,R2                                    
+<A NAME="CODE:010a"></A>CODE:CODE:010a  6a              ADD         A,R2                                    
+<A NAME="CODE:010b"></A>CODE:CODE:010b  aa              MOV         R2,A                                    
+<A NAME="CODE:010c"></A>CODE:CODE:010c  fb              MOV         A,R3                                    
+<A NAME="CODE:010d"></A>CODE:CODE:010d  7b              ADDC        A,R3                                    
+<A NAME="CODE:010e"></A>CODE:CODE:010e  ab              MOV         R3,A                                    
+<A NAME="CODE:010f"></A>CODE:CODE:010f  f1              MOV         A,<A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>                        ;A=t0
+<A NAME="CODE:0110"></A>CODE:CODE:0110  71              ADDC        A,<A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>                        ;= ??
+<A NAME="CODE:0111"></A>CODE:CODE:0111  a1              MOV         <A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>,A                        ;{t0,R3,R2} += {t0,R3,R2}
+                                                                                    ;-or-
+                                                                                    ;{t0,R3,R2} *= 2
+<A NAME="CODE:0112"></A>CODE:CODE:0112  19              INC         R1                                      
+<A NAME="CODE:0113"></A>CODE:CODE:0113  f1              MOV         A,<A HREF="#INTMEM:22">@R1=>INTMEM:k</A>                         ;A=k
+<A NAME="CODE:0114"></A>CODE:CODE:0114  07              DEC         A                                       
+<A NAME="CODE:0115"></A>CODE:CODE:0115  a1              MOV         <A HREF="#INTMEM:22">@R1=>INTMEM:k</A>,A                         ;k -= 1
+<A NAME="CODE:0116"></A>CODE:CODE:0116  c9              DEC         R1                                      
+<A NAME="CODE:0117"></A>CODE:CODE:0117  9609            JNZ         <A HREF="#CODE:0109">loop0</A>                                   ;Repeat loop 3 times
+                            ;----
+                            ;Above loop effectively does:
+                            ;{*0x21,R3,R2} *= 8
+                            ;After the loop R1 = 0x21 = &t0
+                            ;
+                            ;
+<A NAME="CODE:0119"></A>                            ;
+                            ;----
+CODE:CODE:0119  d5              SEL         RB1                                     
+<A NAME="CODE:011a"></A>CODE:CODE:011a  fa              MOV         A,R2                                    
+<A NAME="CODE:011b"></A>CODE:CODE:011b  c5              SEL         RB0                                     
+<A NAME="CODE:011c"></A>CODE:CODE:011c  37              CPL         A                                       
+<A NAME="CODE:011d"></A>CODE:CODE:011d  6a              ADD         A,R2                                    
+<A NAME="CODE:011e"></A>CODE:CODE:011e  aa              MOV         R2,A                                    ;R2+=~R2'
+<A NAME="CODE:011f"></A>CODE:CODE:011f  e628            JNC         <A HREF="#CODE:0128">LAB_CODE_0128</A>                           
+<A NAME="CODE:0121"></A>CODE:CODE:0121  1b              INC         R3                                      
+<A NAME="CODE:0122"></A>CODE:CODE:0122  fb              MOV         A,R3                                    ;if R2 + ~R2' overflows:
+                                                                                    ;  R3 += 1
+<A NAME="CODE:0123"></A>CODE:CODE:0123  9628            JNZ         <A HREF="#CODE:0128">LAB_CODE_0128</A>                           
+<A NAME="CODE:0125"></A>CODE:CODE:0125  f1              MOV         A,<A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>                        ;= ??
+<A NAME="CODE:0126"></A>CODE:CODE:0126  17              INC         A                                       
+<A NAME="CODE:0127"></A>CODE:CODE:0127  a1              MOV         <A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>,A                        ;if R3+=1 overflows:
+                                                                                    ;  t0 += 1
+                            ;----
+                            ;Above code effectively does:
+                            ;{t0,R3,R2} += {0,0,~R2'}
+<A NAME="CODE:0128"></A>                            LAB_CODE_0128:                ;XREF[2,0]:   <A HREF="#CODE:011f">CODE:011f</A>,<A HREF="#CODE:0123">CODE:0123</A>
+CODE:CODE:0128  d5              SEL         RB1                                     
+<A NAME="CODE:0129"></A>CODE:CODE:0129  ff              MOV         A,R7                                    
+<A NAME="CODE:012a"></A>CODE:CODE:012a  c5              SEL         RB0                                     
+<A NAME="CODE:012b"></A>CODE:CODE:012b  37              CPL         A                                       
+<A NAME="CODE:012c"></A>CODE:CODE:012c  6a              ADD         A,R2                                    
+<A NAME="CODE:012d"></A>CODE:CODE:012d  aa              MOV         R2,A                                    ;R2+=~R7'
+<A NAME="CODE:012e"></A>CODE:CODE:012e  e637            JNC         <A HREF="#CODE:0137">LAB_CODE_0137</A>                           
+<A NAME="CODE:0130"></A>CODE:CODE:0130  1b              INC         R3                                      
+<A NAME="CODE:0131"></A>CODE:CODE:0131  fb              MOV         A,R3                                    ;if R2+~R7' overflows:
+                                                                                    ;  R3+=1
+<A NAME="CODE:0132"></A>CODE:CODE:0132  9637            JNZ         <A HREF="#CODE:0137">LAB_CODE_0137</A>                           
+<A NAME="CODE:0134"></A>CODE:CODE:0134  f1              MOV         A,<A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>                        ;= ??
+<A NAME="CODE:0135"></A>CODE:CODE:0135  17              INC         A                                       
+<A NAME="CODE:0136"></A>CODE:CODE:0136  a1              MOV         <A HREF="#INTMEM:21">@R1=>INTMEM:t0</A>,A                        ;if R3+=1 overflows:
+                                                                                    ;  t0 += 1
+                            ;----
+                            ;Above code effectively does:
+                            ;{t0,R3,R2} += {0,0,~R7'}
+<A NAME="CODE:0137"></A>                            ;At this point,
+                            ;{t0,R3,R2} = 8*CNT(R3,R2) +
+                            ;             CNT(R2') + CNT(R7')
+                            LAB_CODE_0137:                ;XREF[2,0]:   <A HREF="#CODE:012e">CODE:012e</A>,<A HREF="#CODE:0132">CODE:0132</A>
+CODE:CODE:0137  d5              SEL         RB1                                     
+<A NAME="CODE:0138"></A>CODE:CODE:0138  fe              MOV         A,R6                                    
+<A NAME="CODE:0139"></A>CODE:CODE:0139  c5              SEL         RB0                                     
+<A NAME="CODE:013a"></A>CODE:CODE:013a  37              CPL         A                                       ;A=~R6'
+<A NAME="CODE:013b"></A>CODE:CODE:013b  83              RET                                                  
+<A NAME="CODE:013c"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined integrate()
+                            ;######################################
+                            ;
+                            ;       ###    ########   ######  
+                            ;      ## ##   ##     ## ##    ## 
+                            ;     ##   ##  ##     ## ##       
+                            ;    ##     ## ##     ## ##       
+                            ;    ######### ##     ## ##       
+                            ;    ##     ## ##     ## ##    ## 
+                            ;    ##     ## ########   ######  
+                            ;
+                            ;#######################################
+                            ;
+                            ;This is without doubt the main function in
+                            ;this firmware. It implements a single
+                            ;conversion of integrating ADC.
+                            ;
+                            ;Arguments:
+                            ; R0 - cmd (unused)
+                            ; R1 - duration of integration, number of
+                            ;      SINE half-periods (2, 20 or 200)
+                            ; *0x20 - set to 1 if R1==200 else 0
+                            ; 
+                            ;Following regs:
+                            ; R2  R3  R4  R5  R7
+                            ; R0' R1' R2' R3' R4' R5' R6' R7'
+                            ; Are all set to 0xFF = 0b1111.1111 
+                            ;
+                            ;These regs are garbage:
+                            ; R6
+                            ;
+                            ;Some notations:
+                            ; Vint - voltage on the output of
+                            ;      integrator (I9)
+                            ; K0 - comparator I12, monitors sign(Vint)
+                            ; K1 - comparator I11, checks if Vint is in
+                            ;      range [-9V,+9V] (approx.)
+                            ; K2 - comparator I13, checks if Vint is in
+                            ;      range [-0.3V,+0.3V] (approx.)
+                            ;
+                            ;Flags:
+                            ; INT=0: Vint within K1 range (JNI jumps)
+                            ; INT=1: Vint out of K1 range
+                            ; -
+                            ; T0=0: Vint within K2 range
+                            ; T0=1: Vint out of K2 range
+                            ; -
+                            ; T1=0: Vint is positive
+                            ; T1=1: Vint is negative 
+                            ;-------
+                                                          ;XREF[1,0]:   <A HREF="#CODE:0041">CODE:0041</A>
+CODE:CODE:013c  85              CLR         F0                                      
+<A NAME="CODE:013d"></A>CODE:CODE:013d  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:013e"></A>CODE:CODE:013e  f27a            JB0x7       <A HREF="#CODE:017a">wait_for_sine_negedge</A>                   
+<A NAME="CODE:0140"></A>CODE:CODE:0140  95              CPL         F0                                      
+                            ;-----
+                            ;if SINE==1
+                            ;  F0=0
+                            ;  wait_for_sine_negedge
+                            ;else
+                            ;  F0=1
+                            ;  wait_for_sine_posedge
+                            ;-----
+<A NAME="CODE:0141"></A>                            wait_for_sine_posedge:        ;XREF[1,0]:   <A HREF="#CODE:0143">CODE:0143</A>
+CODE:CODE:0141  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:0142"></A>CODE:CODE:0142  37              CPL         A                                       
+<A NAME="CODE:0143"></A>CODE:CODE:0143  f241            JB0x7       <A HREF="#CODE:0141">wait_for_sine_posedge</A>                   ;while(SINE==0);
+<A NAME="CODE:0145"></A>CODE:CODE:0145  00              NOP                                                  ;SINE==1 here
+<A NAME="CODE:0146"></A>                            ;#######################################
+                            ;
+                            ;########    ##   
+                            ;   ##     ####   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##     ###### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;T1 integration phase.
+                            ;Sx switch is contantly on, so integrator
+                            ;is charged by current proportional to
+                            ;the input voltage. We keep it like that
+                            ;till a given (by R1 value) number of
+                            ;SINE half-periods is elapsed. Then
+                            ;we move on to T2 phase.
+                            ;
+                            ;Here, F1 and C flags contain state of
+                            ;Sn+/- switches, one of which is closed
+                            ;for fixed amount of time when integrator
+                            ;output (Vint) becomes too large. This 
+                            ;injects calibrated amount of charge into
+                            ;integrator, decreasing Vint towards 0.
+                            ;
+                            ;We measure duration of time that Sx and
+                            ;Sn switched are enabled - that is part
+                            ;of final ADC measurement result from
+                            ;which input voltage can be calculated.
+                            ;
+                            ;F0=0 - prev SINE edge was 1->0
+                            ;       next we expect 0->1
+                            ;F0=1 - prev SINE edge was 0->1
+                            ;       next we expect 1->0
+                            ;F0=0 - Sn switches are off
+                            ;F1=1 - Sn+/- switch is switched on
+                            ; C=0 - Sn+ is on (when F1==1)
+                            ; C=1 - Sn- is on (when F1==1)
+                            ;----
+                            ;Measurement results:
+                            ; T_T1 - duration of T1 phase
+                            ; T_T1_Sn- - time with Sn- activated
+                            ; T_T1_Sn- - time with Sn+ activated
+                            ;
+                            ; T_T1 = 32cyc * CNT2(R7,R6)
+                            ; T_T1_Sn- = 32cyc * CNT(R5,R4)
+                            ; T_T1_Sn+ = 32cyc * CNT(R3,R2)
+                            ;----
+                            T1_begin:                     ;XREF[1,0]:   <A HREF="#CODE:017d">CODE:017d</A>
+CODE:CODE:0146  74f8            CALL        <A HREF="#CODE:03f8">delay_28cyc_70us</A>                        ;undefined delay_28cyc_70us()
+<A NAME="CODE:0148"></A>CODE:CODE:0148  a5              CLR         F1                                      ;F1=0
+<A NAME="CODE:0149"></A>CODE:CODE:0149  9a40            ANL         P2,#0x40                                
+<A NAME="CODE:014b"></A>CODE:CODE:014b  8a01            ORL         P2,#0x1                                 ;Enable Sx
+<A NAME="CODE:014d"></A>CODE:CODE:014d  2453            JMP         <A HREF="#CODE:0153">T1_loop.2</A>                               
+<A NAME="CODE:014f"></A>                            ;T1 phase is implemented by this big loop.
+                            ;Duration of each loop iteration is constant,
+                            ;no matter which branches it takes, and it 
+                            ;is equal to 32cyc (80us).
+                            ;----
+                            T1_loop.0.disable_Sn_switches:;XREF[2,0]:   <A HREF="#CODE:018d">CODE:018d</A>,<A HREF="#CODE:0199">CODE:0199</A>
+CODE:CODE:014f  a5              CLR         F1                                      
+<A NAME="CODE:0150"></A>CODE:CODE:0150  9a41            ANL         P2,#0x41                                ;Disable Sn+/i switches
+                                                                                    ;F1=0
+<A NAME="CODE:0152"></A>                            T1_loop.1:                    ;XREF[3,0]:   <A HREF="#CODE:0176">CODE:0176</A>,<A HREF="#CODE:0190">CODE:0190</A>,<A HREF="#CODE:019c">CODE:019c</A>
+CODE:CODE:0152  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0153"></A>                            T1_loop.2:                    ;XREF[3,0]:   <A HREF="#CODE:014d">CODE:014d</A>,<A HREF="#CODE:016d">CODE:016d</A>,<A HREF="#CODE:0172">CODE:0172</A>
+CODE:CODE:0153  ee78            DJNZ        R6,<A HREF="#CODE:0178">skip2cyc.2</A>                           ;T=2c
+<A NAME="CODE:0155"></A>                            ;jump is used to balance timings
+                            ;it takes 2 cyc, same as DEC+NOP
+CODE:CODE:0155  cf              DEC         R7                                      ;T=1c
+<A NAME="CODE:0156"></A>CODE:CODE:0156  00              NOP                                                  ;T=1c
+                            ;------
+                            ;{R7,R6} = DJNZ_DEC({R7,R6})
+                            ;{R7,R6} counts number of loop intervals
+                            ;spent in T1 integration phase
+                            ;
+                            ;
+<A NAME="CODE:0157"></A>                            skip2cyc.2_return:            ;XREF[1,0]:   <A HREF="#CODE:0178">CODE:0178</A>
+CODE:CODE:0157  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c A=P1
+<A NAME="CODE:0158"></A>CODE:CODE:0158  b67f            JF0         <A HREF="#CODE:017f">check_for_sine_negedge</A>                  ;T=2c
+                            ;We check for SINE edge on every loop
+                            ;iteration. Depedning on polarity of
+                            ;previously seen edge (pos or neg),
+                            ;we try to detect an edge of opposite
+                            ;polarity (neg or pos).
+<A NAME="CODE:015a"></A>                            check_for_sine_posedge:       
+CODE:CODE:015a  00              NOP                                                  ;T=1c
+<A NAME="CODE:015b"></A>CODE:CODE:015b  f2b0            JB0x7       <A HREF="#CODE:01b0">sine_edge_detected</A>                      ;T=2c 
+<A NAME="CODE:015d"></A>CODE:CODE:015d  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c 
+<A NAME="CODE:015e"></A>                            sine_edge_not_detected:       ;XREF[1,0]:   <A HREF="#CODE:0182">CODE:0182</A>
+CODE:CODE:015e  00              NOP                                                  ;T=1c
+<A NAME="CODE:015f"></A>                            sine_edge_detected_and_is_n...;XREF[1,0]:   <A HREF="#CODE:01b1">CODE:01b1</A>
+CODE:CODE:015f  7684            JF1         <A HREF="#CODE:0184">handle_active_Sn</A>                        ;T=2c
+                            ;If Sn+/- switch is currently activated,
+                            ;we need to:
+                            ;a. measure how long it is enabled
+                            ;b. disable it after fixed amount of time
+                            ;
+<A NAME="CODE:0161"></A>CODE:CODE:0161  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0162"></A>CODE:CODE:0162  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0163"></A>CODE:CODE:0163  00              NOP                                                  ;T=1c
+<A NAME="CODE:0164"></A>CODE:CODE:0164  97              CLR         C                                       ;T=1c
+<A NAME="CODE:0165"></A>CODE:CODE:0165  8674            JNI         <A HREF="#CODE:0174">vint_in_k1_range</A>                        ;T=2c
+<A NAME="CODE:0167"></A>CODE:CODE:0167  b5              CPL         F1                                      
+                            ;Here, Vint is outside of K1 range
+                            ;this means we'll enable Sn+ or Sn-
+                            ;switch (depends on sign of Vint).
+                            ;We set F1=1 to remember the fact
+                            ;that Sn is enabled.
+                            ;
+<A NAME="CODE:0168"></A>CODE:CODE:0168  466f            JNT1        <A HREF="#CODE:016f">vint_positive_out_of_k1</A>                 
+<A NAME="CODE:016a"></A>                            vint_negative_out_of_k1:      
+CODE:CODE:016a  a7              CPL         C                                       ;C=1
+<A NAME="CODE:016b"></A>CODE:CODE:016b  8a08            ORL         P2,#0x8                                 ;Activate Sn-
+                                                                                    ; integrator is inverting,
+                                                                                    ; so Vint will start increasing
+                                                                                    ; towards 0
+<A NAME="CODE:016d"></A>CODE:CODE:016d  2453            JMP         <A HREF="#CODE:0153">T1_loop.2</A>                               
+<A NAME="CODE:016f"></A>                            vint_positive_out_of_k1:      ;XREF[1,0]:   <A HREF="#CODE:0168">CODE:0168</A>
+CODE:CODE:016f  00              NOP                                                  ;C=0 here
+<A NAME="CODE:0170"></A>CODE:CODE:0170  8a02            ORL         P2,#0x2                                 ;Activate Sn+
+                                                                                    ; integrator is inverting,
+                                                                                    ; so Vint will start decreasing
+                                                                                    ; towards 0
+<A NAME="CODE:0172"></A>CODE:CODE:0172  2453            JMP         <A HREF="#CODE:0153">T1_loop.2</A>                               
+<A NAME="CODE:0174"></A>                            vint_in_k1_range:             ;XREF[1,0]:   <A HREF="#CODE:0165">CODE:0165</A>
+CODE:CODE:0174  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0175"></A>CODE:CODE:0175  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T=2c
+<A NAME="CODE:0176"></A>CODE:CODE:0176  2452            JMP         <A HREF="#CODE:0152">T1_loop.1</A>                               ;T=2c
+<A NAME="CODE:0178"></A>                            skip2cyc.2:                   ;XREF[1,0]:   <A HREF="#CODE:0153">CODE:0153</A>
+CODE:CODE:0178  2457            JMP         <A HREF="#CODE:0157">skip2cyc.2_return</A>                       
+<A NAME="CODE:017a"></A>                            wait_for_sine_negedge:        ;XREF[2,0]:   <A HREF="#CODE:013e">CODE:013e</A>,<A HREF="#CODE:017b">CODE:017b</A>
+CODE:CODE:017a  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:017b"></A>CODE:CODE:017b  f27a            JB0x7       <A HREF="#CODE:017a">wait_for_sine_negedge</A>                   ;while(SINE==1);
+<A NAME="CODE:017d"></A>CODE:CODE:017d  2446            JMP         <A HREF="#CODE:0146">T1_begin</A>                                ;SINE==0 here
+<A NAME="CODE:017f"></A>                            check_for_sine_negedge:       ;XREF[1,0]:   <A HREF="#CODE:0158">CODE:0158</A>
+CODE:CODE:017f  37              CPL         A                                       
+<A NAME="CODE:0180"></A>CODE:CODE:0180  f2b0            JB0x7       <A HREF="#CODE:01b0">sine_edge_detected</A>                      
+<A NAME="CODE:0182"></A>CODE:CODE:0182  245e            JMP         <A HREF="#CODE:015e">sine_edge_not_detected</A>                  
+<A NAME="CODE:0184"></A>                            handle_active_Sn:             ;XREF[1,0]:   <A HREF="#CODE:015f">CODE:015f</A>
+CODE:CODE:0184  f692            JC          <A HREF="#CODE:0192">handle_active_Snn</A>                       
+<A NAME="CODE:0186"></A>                            handle_active_Snp:            
+CODE:CODE:0186  ea9e            DJNZ        R2,<A HREF="#CODE:019e">skip2cyc.0</A>                           
+<A NAME="CODE:0188"></A>CODE:CODE:0188  cb              DEC         R3                                      
+<A NAME="CODE:0189"></A>CODE:CODE:0189  00              NOP                                                  
+                            ;------
+                            ;{R3,R2} = DJNZ_DEC({R3,R2})
+                            ;{R3,R2} counts number of loop intervals
+                            ;spent in T1 integration phase with
+                            ;Sn+ activated
+                            ;
+<A NAME="CODE:018a"></A>                            skip2cyc.0_return:            ;XREF[1,0]:   <A HREF="#CODE:019e">CODE:019e</A>
+CODE:CODE:018a  fa              MOV         A,R2                                    
+<A NAME="CODE:018b"></A>CODE:CODE:018b  530f            ANL         A,#0xf                                  
+<A NAME="CODE:018d"></A>CODE:CODE:018d  c64f            JZ          <A HREF="#CODE:014f">T1_loop.0.disable_Sn_switches</A>           ;Disable Sn switch after
+                                                                                    ;- 15 iterations the first time
+                                                                                    ;- 16 iterations all next times
+                                                                                    ;this is because R2/R4 init to 0xFF
+                                                                                    ;in the beginning of measurement
+<A NAME="CODE:018f"></A>CODE:CODE:018f  00              NOP                                                  
+<A NAME="CODE:0190"></A>CODE:CODE:0190  2452            JMP         <A HREF="#CODE:0152">T1_loop.1</A>                               
+<A NAME="CODE:0192"></A>                            handle_active_Snn:            ;XREF[1,0]:   <A HREF="#CODE:0184">CODE:0184</A>
+CODE:CODE:0192  eca0            DJNZ        R4,<A HREF="#CODE:01a0">skip2cyc.1</A>                           
+<A NAME="CODE:0194"></A>CODE:CODE:0194  cd              DEC         R5                                      
+<A NAME="CODE:0195"></A>CODE:CODE:0195  00              NOP                                                  
+                            ;------
+                            ;{R5,R4} = DJNZ_DEC({R5,R4})
+                            ;{R5,R4} counts number of loop intervals
+                            ;spent in T1 integration phase with
+                            ;Sn- activated
+                            ;
+                            ;
+<A NAME="CODE:0196"></A>                            skip2cyc.1_return:            ;XREF[1,0]:   <A HREF="#CODE:01a0">CODE:01a0</A>
+CODE:CODE:0196  fc              MOV         A,R4                                    
+<A NAME="CODE:0197"></A>CODE:CODE:0197  530f            ANL         A,#0xf                                  
+<A NAME="CODE:0199"></A>CODE:CODE:0199  c64f            JZ          <A HREF="#CODE:014f">T1_loop.0.disable_Sn_switches</A>           ;Disable Sn switch after
+                                                                                    ;- 15 iterations the first time
+                                                                                    ;- 16 iterations all next times
+                                                                                    ;this is because R2/R4 init to 0xFF
+                                                                                    ;in the beginning of measurement
+<A NAME="CODE:019b"></A>CODE:CODE:019b  00              NOP                                                  
+<A NAME="CODE:019c"></A>CODE:CODE:019c  2452            JMP         <A HREF="#CODE:0152">T1_loop.1</A>                               
+<A NAME="CODE:019e"></A>                            skip2cyc.0:                   ;XREF[1,0]:   <A HREF="#CODE:0186">CODE:0186</A>
+CODE:CODE:019e  248a            JMP         <A HREF="#CODE:018a">skip2cyc.0_return</A>                       
+<A NAME="CODE:01a0"></A>                            skip2cyc.1:                   ;XREF[1,0]:   <A HREF="#CODE:0192">CODE:0192</A>
+CODE:CODE:01a0  2496            JMP         <A HREF="#CODE:0196">skip2cyc.1_return</A>                       
+<A NAME="CODE:01a2"></A>                            T1_end_handle_active_Sn:      ;XREF[1,0]:   <A HREF="#CODE:01b4">CODE:01b4</A>
+CODE:CODE:01a2  f6a9            JC          <A HREF="#CODE:01a9">T1_end_handle_active_Snn</A>                
+<A NAME="CODE:01a4"></A>                            T1_end_handle_active_Snp:     
+CODE:CODE:01a4  eaae            DJNZ        R2,<A HREF="#CODE:01ae">LAB_CODE_01ae</A>                        
+<A NAME="CODE:01a6"></A>CODE:CODE:01a6  cb              DEC         R3                                      
+<A NAME="CODE:01a7"></A>CODE:CODE:01a7  045e            JMP         <A HREF="#CODE:005e">T1_completed.2</A>                          ;{R3,R2} = DJNZ_DEC({R3,R2})
+<A NAME="CODE:01a9"></A>                            T1_end_handle_active_Snn:     ;XREF[1,0]:   <A HREF="#CODE:01a2">CODE:01a2</A>
+CODE:CODE:01a9  ecae            DJNZ        R4,<A HREF="#CODE:01ae">LAB_CODE_01ae</A>                        
+<A NAME="CODE:01ab"></A>CODE:CODE:01ab  cd              DEC         R5                                      
+<A NAME="CODE:01ac"></A>CODE:CODE:01ac  045e            JMP         <A HREF="#CODE:005e">T1_completed.2</A>                          ;{R5,R4} = DJNZ_DEC({R5,R4})
+<A NAME="CODE:01ae"></A>                            LAB_CODE_01ae:                ;XREF[2,0]:   <A HREF="#CODE:01a4">CODE:01a4</A>,<A HREF="#CODE:01a9">CODE:01a9</A>
+CODE:CODE:01ae  045d            JMP         <A HREF="#CODE:005d">T1_completed.1</A>                          
+<A NAME="CODE:01b0"></A>                            sine_edge_detected:           ;XREF[2,0]:   <A HREF="#CODE:015b">CODE:015b</A>,<A HREF="#CODE:0180">CODE:0180</A>
+CODE:CODE:01b0  95              CPL         F0                                      ;invert F0 so now we'll wait for
+                                                                                    ;SINE edge of opposite polarity
+<A NAME="CODE:01b1"></A>                            ;
+                            ;Count sine edges (half-periods) via R1
+                            ;If R1 was 20, then we'll repeat the
+                            ;loop 20 times, or 10 SINE periods,
+                            ;or 200 ms (for 50Hz network)
+                            ;etc..
+                            ;----
+CODE:CODE:01b1  e95f            DJNZ        R1,<A HREF="#CODE:015f">sine_edge_detected_and_is_not_last...</A>
+<A NAME="CODE:01b3"></A>                            ;Exiting the loop means end of T1 integration
+                            ;interval. Sx switch is disengaged.
+                            ;----
+CODE:CODE:01b3  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:01b4"></A>CODE:CODE:01b4  76a2            JF1         <A HREF="#CODE:01a2">T1_end_handle_active_Sn</A>                 
+<A NAME="CODE:01b6"></A>CODE:CODE:01b6  045b            JMP         <A HREF="#CODE:005b">T1_completed.0</A>                          
+<A NAME="CODE:01b8"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined test_mode26_Snul()
+                                                          ;XREF[1,0]:   <A HREF="#CODE:029b">CODE:029b</A>
+CODE:CODE:01b8  231a            MOV         A,#0x1a                                 
+<A NAME="CODE:01ba"></A>CODE:CODE:01ba  54fe            CALL        <A HREF="#CODE:02fe">set_mode</A>                                ;Set mode 26
+<A NAME="CODE:01bc"></A>CODE:CODE:01bc  2320            MOV         A,#0x20                                 
+<A NAME="CODE:01be"></A>CODE:CODE:01be  3a              OUTL        P2,A                                    ;Snul enabled
+                                                                                    ;Other S* disabled
+<A NAME="CODE:01bf"></A>CODE:CODE:01bf  040e            JMP         <A HREF="#CODE:000e">main_loop</A>                               
+<A NAME="CODE:01c1"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined test_comparator_K2()
+                                                          ;XREF[1,0]:   <A HREF="#CODE:02ab">CODE:02ab</A>
+CODE:CODE:01c1  2320            MOV         A,#0x20                                 
+<A NAME="CODE:01c3"></A>CODE:CODE:01c3  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:01c4"></A>                            test_comparator_K2_loop.0:    ;XREF[1,0]:   <A HREF="#CODE:01da">CODE:01da</A>
+CODE:CODE:01c4  2310            MOV         A,#0x10                                 
+<A NAME="CODE:01c6"></A>CODE:CODE:01c6  3a              OUTL        P2,A                                    ;Sn1- ON
+<A NAME="CODE:01c7"></A>                            vint_neg_loop.0:              ;XREF[1,0]:   <A HREF="#CODE:01c9">CODE:01c9</A>
+CODE:CODE:01c7  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:01c9"></A>CODE:CODE:01c9  56c7            JT1         <A HREF="#CODE:01c7">vint_neg_loop.0</A>                         ;Wait till Vint becomes > 0V
+<A NAME="CODE:01cb"></A>                            vint_in_k2_loop.0:            ;XREF[1,0]:   <A HREF="#CODE:01cd">CODE:01cd</A>
+CODE:CODE:01cb  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:01cd"></A>CODE:CODE:01cd  26cb            JNT0        <A HREF="#CODE:01cb">vint_in_k2_loop.0</A>                       ;Wait till Vint goes out of
+                                                                                    ;K2 range
+<A NAME="CODE:01cf"></A>CODE:CODE:01cf  2304            MOV         A,#0x4                                  
+<A NAME="CODE:01d1"></A>CODE:CODE:01d1  3a              OUTL        P2,A                                    ;Sn1+ ON
+<A NAME="CODE:01d2"></A>                            vint_pos_loop.0:              ;XREF[1,0]:   <A HREF="#CODE:01d4">CODE:01d4</A>
+CODE:CODE:01d2  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:01d4"></A>CODE:CODE:01d4  46d2            JNT1        <A HREF="#CODE:01d2">vint_pos_loop.0</A>                         ;Wait till Vint becomes < 0V
+<A NAME="CODE:01d6"></A>                            vint_in_k2_loop.1:            ;XREF[1,0]:   <A HREF="#CODE:01d8">CODE:01d8</A>
+CODE:CODE:01d6  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:01d8"></A>CODE:CODE:01d8  26d6            JNT0        <A HREF="#CODE:01d6">vint_in_k2_loop.1</A>                       ;Wait till Vint goes out of
+                                                                                    ;K2 range
+<A NAME="CODE:01da"></A>CODE:CODE:01da  24c4            JMP         <A HREF="#CODE:01c4">test_comparator_K2_loop.0</A>               
+<A NAME="CODE:01dc"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined test_mode27_28_Sx_Snul()
+                                                          ;XREF[2,0]:   <A HREF="#CODE:01ea">CODE:01ea</A>,<A HREF="#CODE:02ad">CODE:02ad</A>
+CODE:CODE:01dc  231b            MOV         A,#0x1b                                 
+<A NAME="CODE:01de"></A>CODE:CODE:01de  54fe            CALL        <A HREF="#CODE:02fe">set_mode</A>                                ;Set mode 27
+<A NAME="CODE:01e0"></A>CODE:CODE:01e0  34ec            CALL        <A HREF="#CODE:01ec">test_dly_Sx_dly_Snul_dly</A>                ;undefined test_dly_Sx_dly_Snul_dly()
+<A NAME="CODE:01e2"></A>CODE:CODE:01e2  231c            MOV         A,#0x1c                                 
+<A NAME="CODE:01e4"></A>CODE:CODE:01e4  54fe            CALL        <A HREF="#CODE:02fe">set_mode</A>                                ;Set mode 28
+<A NAME="CODE:01e6"></A>CODE:CODE:01e6  34ec            CALL        <A HREF="#CODE:01ec">test_dly_Sx_dly_Snul_dly</A>                ;undefined test_dly_Sx_dly_Snul_dly()
+<A NAME="CODE:01e8"></A>CODE:CODE:01e8  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:01ea"></A>CODE:CODE:01ea  24dc            JMP         <A HREF="#CODE:01dc">test_mode27_28_Sx_Snul</A>                  
+<A NAME="CODE:01ec"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined test_dly_Sx_dly_Snul_dly()
+                                                          ;XREF[2,0]:   <A HREF="#CODE:01e0">CODE:01e0</A>,<A HREF="#CODE:01e6">CODE:01e6</A>
+CODE:CODE:01ec  bb09            MOV         R3,#0x9                                 
+<A NAME="CODE:01ee"></A>CODE:CODE:01ee  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 9 ms
+<A NAME="CODE:01f0"></A>CODE:CODE:01f0  2301            MOV         A,#0x1                                  
+<A NAME="CODE:01f2"></A>CODE:CODE:01f2  3a              OUTL        P2,A                                    ;Sx ON
+<A NAME="CODE:01f3"></A>CODE:CODE:01f3  bb02            MOV         R3,#0x2                                 
+<A NAME="CODE:01f5"></A>CODE:CODE:01f5  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 2 ms
+<A NAME="CODE:01f7"></A>CODE:CODE:01f7  2320            MOV         A,#0x20                                 
+<A NAME="CODE:01f9"></A>CODE:CODE:01f9  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:01fa"></A>CODE:CODE:01fa  bb09            MOV         R3,#0x9                                 
+<A NAME="CODE:01fc"></A>CODE:CODE:01fc  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 9 ms
+<A NAME="CODE:01fe"></A>CODE:CODE:01fe  83              RET                                                  
+<A NAME="CODE:01ff"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined comm_send_1byte()
+                            ;This function transmits byte from A
+                            ;in MSB-first order via DATA_OUT pin,
+                            ;signaling readiness to transmit by setting
+                            ;DATA_OUT 1->0, and starting transmission
+                            ;almost immediately when RDY_IN goes 1->0.
+                            ;
+                            ;9 bits are transmitted:
+                            ;{1'b1, A[7:0]}
+                            ;
+                            ;First bit - a start bit - makes DATA_OUT
+                            ;to go 0->1 and synchronizes receiver.
+                            ;
+                            ;Duration of each bit is exactly 100us.
+                                                          ;XREF[6,0]:   <A HREF="#CODE:0044">CODE:0044</A>,<A HREF="#CODE:0047">CODE:0047</A>,<A HREF="#CODE:004a">CODE:004a</A>,<A HREF="#CODE:004f">CODE:004f</A>
+                                                          ;             <A HREF="#CODE:0053">CODE:0053</A>,<A HREF="#CODE:02b3">CODE:02b3</A>
+CODE:CODE:01ff  a8              MOV         R0,A                                    
+<A NAME="CODE:0200"></A>CODE:CODE:0200  b908            MOV         R1,#0x8                                 
+<A NAME="CODE:0202"></A>CODE:CODE:0202  8901            ORL         P1,#0x1                                 ;Set DATA_OUT=0, RDY_OUT=nc
+<A NAME="CODE:0204"></A>                            wait_for_rdyin_0:             ;XREF[1,0]:   <A HREF="#CODE:020a">CODE:020a</A>
+CODE:CODE:0204  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:0205"></A>CODE:CODE:0205  37              CPL         A                                       
+<A NAME="CODE:0206"></A>CODE:CODE:0206  d20c            JB0x6       <A HREF="#CODE:020c">rdyin_is_0</A>                              
+<A NAME="CODE:0208"></A>CODE:CODE:0208  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+                            ;timing of this part is not important,
+                            ;since timing-critical part of transmission
+                            ;begins only when DATA_OUT goes 0->1
+<A NAME="CODE:020a"></A>CODE:CODE:020a  4404            JMP         <A HREF="#CODE:0204">wait_for_rdyin_0</A>                        
+<A NAME="CODE:020c"></A>                            ;DATA_OUT goes 0->1 in a few us
+                            ;after RDY_IN==0, acting as a
+                            ;start bit
+                            rdyin_is_0:                   ;XREF[1,0]:   <A HREF="#CODE:0206">CODE:0206</A>
+CODE:CODE:020c  99fe            ANL         P1,#0xfe                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=nc
+<A NAME="CODE:020e"></A>CODE:CODE:020e  ba0f            MOV         R2,#0xf                                 ;T 5us
+<A NAME="CODE:0210"></A>                            LAB_CODE_0210:                ;XREF[1,0]:   <A HREF="#CODE:0210">CODE:0210</A>
+CODE:CODE:0210  ea10            DJNZ        R2,<A HREF="#CODE:0210">LAB_CODE_0210</A>                        ;T 75us
+<A NAME="CODE:0212"></A>CODE:CODE:0212  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0213"></A>CODE:CODE:0213  f8              MOV         A,R0                                    ;T 2.5us
+<A NAME="CODE:0214"></A>                            write_data_bit:               ;XREF[1,0]:   <A HREF="#CODE:0224">CODE:0224</A>
+CODE:CODE:0214  f7              RLC         A                                       ;T 2.5us
+                            ;----
+                            ;data is transmitted MSB first,
+                            ;8 bits total
+                            ;
+<A NAME="CODE:0215"></A>CODE:CODE:0215  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0216"></A>CODE:CODE:0216  e61c            JNC         <A HREF="#CODE:021c">data_is_0</A>                               ;T 5us
+                            ;----
+                            ;First data bit appears on DATA_OUT
+                            ;in =100us after DATA_OUT went 0->1
+                            ;to transmit start bit
+                            ;
+<A NAME="CODE:0218"></A>CODE:CODE:0218  99fe            ANL         P1,#0xfe                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=nc
+<A NAME="CODE:021a"></A>CODE:CODE:021a  4420            JMP         <A HREF="#CODE:0220">cont</A>                                    ;T 5us
+<A NAME="CODE:021c"></A>                            data_is_0:                    ;XREF[1,0]:   <A HREF="#CODE:0216">CODE:0216</A>
+CODE:CODE:021c  8901            ORL         P1,#0x1                                 ;T 5us
+                                                                                    ;Set DATA_OUT=0, RDY_OUT=nc
+<A NAME="CODE:021e"></A>CODE:CODE:021e  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:021f"></A>CODE:CODE:021f  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0220"></A>                            cont:                         ;XREF[1,0]:   <A HREF="#CODE:021a">CODE:021a</A>
+CODE:CODE:0220  ba0e            MOV         R2,#0xe                                 ;T 5us
+<A NAME="CODE:0222"></A>                            LAB_CODE_0222:                ;XREF[1,0]:   <A HREF="#CODE:0222">CODE:0222</A>
+CODE:CODE:0222  ea22            DJNZ        R2,<A HREF="#CODE:0222">LAB_CODE_0222</A>                        ;T 70us
+<A NAME="CODE:0224"></A>CODE:CODE:0224  e914            DJNZ        R1,<A HREF="#CODE:0214">write_data_bit</A>                       ;T 5us
+                            ;----
+                            ;Loop repeats 8 times. Interval of loop
+                            ;is exactly 100us, giving interface bit clock
+                            ;of 10000 bits/s
+<A NAME="CODE:0226"></A>CODE:CODE:0226  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0227"></A>CODE:CODE:0227  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0228"></A>CODE:CODE:0228  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0229"></A>CODE:CODE:0229  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:022a"></A>CODE:CODE:022a  99fa            ANL         P1,#0xfa                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=1
+                            ;----
+                            ;Above NOPs ensure correct duration of
+                            ;last transmitted bit of =100us
+                            ;
+                            ;
+<A NAME="CODE:022c"></A>CODE:CODE:022c  83              RET                                                  
+<A NAME="CODE:022d"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void comm_recv_1byte(void)
+                            ;This function receives 8 bits of data
+                            ;in MSB-first order from DATA_IN pin
+                            ;and puts them into A register.
+                            ;
+                            ;It waits for DATA_IN to go 0 (transmitter
+                            ;signaling that it wants to transmit), and
+                            ;in a few us sets RDY_OUT 1->0, signaling
+                            ;readiness to receive.
+                            ;
+                            ;Then it waits for DATA_IN to go 0->1,
+                            ;marking the start bit of a transmission
+                            ;(which is always 1'b1). Exactly 157.5us
+                            ;after DATA_IN posedge it samples first
+                            ;bit of data, and then it samples 7 other
+                            ;bits of data with exactly 100us interval.
+                            ;
+                            ;After all bits have been sampled, it sets
+                            ;RDY_OUT 0->1 and returns.
+                            ;
+                            ;NOTE: 157.5us seems like a bug, by all means
+                            ;it should be 150us... This offsets bit
+                            ;sampling times by +7.5us, which is still
+                            ;almost at a mid-point, so not a big deal.
+                                                          ;XREF[3,0]:   <A HREF="#CODE:000e">CODE:000e</A>,<A HREF="#CODE:022e">CODE:022e</A>,<A HREF="#CODE:02b1">CODE:02b1</A>
+CODE:CODE:022d  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:022e"></A>CODE:CODE:022e  922d            JB0x4       <A HREF="#CODE:022d">comm_recv_1byte</A>                         ;wait till DATA_IN==0
+<A NAME="CODE:0230"></A>CODE:CODE:0230  b800            MOV         R0,#0x0                                 
+<A NAME="CODE:0232"></A>CODE:CODE:0232  b908            MOV         R1,#0x8                                 
+<A NAME="CODE:0234"></A>CODE:CODE:0234  97              CLR         C                                       
+<A NAME="CODE:0235"></A>CODE:CODE:0235  8904            ORL         P1,#0x4                                 ;set RDY_OUT=0, DATA_OUT=nc
+<A NAME="CODE:0237"></A>                            wait_for_datain_H:            ;XREF[1,0]:   <A HREF="#CODE:0239">CODE:0239</A>
+CODE:CODE:0237  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T 5us
+<A NAME="CODE:0238"></A>CODE:CODE:0238  37              CPL         A                                       ;T 2.5us
+<A NAME="CODE:0239"></A>CODE:CODE:0239  9237            JB0x4       <A HREF="#CODE:0237">wait_for_datain_H</A>                       ;T 5us
+                                                                                    ;wait till DATA_IN==1
+<A NAME="CODE:023b"></A>CODE:CODE:023b  ba0f            MOV         R2,#0xf                                 ;T 5us
+<A NAME="CODE:023d"></A>                            LAB_CODE_023d:                ;XREF[1,0]:   <A HREF="#CODE:023d">CODE:023d</A>
+CODE:CODE:023d  ea3d            DJNZ        R2,<A HREF="#CODE:023d">LAB_CODE_023d</A>                        ;T 75us
+<A NAME="CODE:023f"></A>                            read_data_bit:                ;XREF[1,0]:   <A HREF="#CODE:0251">CODE:0251</A>
+CODE:CODE:023f  ba0c            MOV         R2,#0xc                                 ;T 5us
+<A NAME="CODE:0241"></A>                            LAB_CODE_0241:                ;XREF[1,0]:   <A HREF="#CODE:0241">CODE:0241</A>
+CODE:CODE:0241  ea41            DJNZ        R2,<A HREF="#CODE:0241">LAB_CODE_0241</A>                        ;T 60us
+<A NAME="CODE:0243"></A>                            ;NOTE:
+                            ;1st data bit is read 157.5us after
+                            ;beginning of start bit
+                            ;(that is, after DATA_IN posedge when
+                            ;RDY_OUT=0)
+                            ;
+                            ;Each consecutive data bit is read in
+                            ;100 us after the previous one
+                            ;----
+CODE:CODE:0243  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;T 5us
+<A NAME="CODE:0244"></A>CODE:CODE:0244  37              CPL         A                                       ;T 2.5us
+                                                                                    ;A[4]=~DATA_IN
+<A NAME="CODE:0245"></A>CODE:CODE:0245  924a            JB0x4       <A HREF="#CODE:024a">data_is_0</A>                               ;T 5us
+                                                                                    ;jump if DATA_IN==0
+<A NAME="CODE:0247"></A>CODE:CODE:0247  18              INC         R0                                      ;T 2.5us
+                                                                                    ;if (DATA_IN) R0++
+<A NAME="CODE:0248"></A>CODE:CODE:0248  444d            JMP         <A HREF="#CODE:024d">LAB_CODE_024d</A>                           ;T 5us
+<A NAME="CODE:024a"></A>                            data_is_0:                    ;XREF[1,0]:   <A HREF="#CODE:0245">CODE:0245</A>
+CODE:CODE:024a  00              NOP                                                  ;compensate timing of INC/JMP above
+                                                                                    ;T 2.5us
+<A NAME="CODE:024b"></A>CODE:CODE:024b  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:024c"></A>CODE:CODE:024c  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:024d"></A>                            LAB_CODE_024d:                ;XREF[1,0]:   <A HREF="#CODE:0248">CODE:0248</A>
+CODE:CODE:024d  f8              MOV         A,R0                                    ;T 2.5us
+<A NAME="CODE:024e"></A>CODE:CODE:024e  f7              RLC         A                                       ;T 2.5us
+<A NAME="CODE:024f"></A>CODE:CODE:024f  a8              MOV         R0,A                                    ;T 2.5us
+                                                                                    ;R0<<=1
+<A NAME="CODE:0250"></A>CODE:CODE:0250  00              NOP                                                  ;T 2.5us
+<A NAME="CODE:0251"></A>CODE:CODE:0251  e93f            DJNZ        R1,<A HREF="#CODE:023f">read_data_bit</A>                        ;T 5us
+                            ;repeat loop 8 times to get 8 bits;
+                            ;timing of the loop determines bit clock
+                            ;and is carefully controlled by NOPs
+                            ;where needed
+                            ;
+                            ;Period of one loop is exactly 100us,
+                            ;no matter which jumps it took,
+                            ;resulting in 10000 bit/s bit clock
+                            ;----
+<A NAME="CODE:0253"></A>CODE:CODE:0253  99fa            ANL         P1,#0xfa                                ;set RDY_OUT=1, DATA_OUT=1
+<A NAME="CODE:0255"></A>CODE:CODE:0255  67              RRC         A                                       ;compensate one unneeded RLC
+<A NAME="CODE:0256"></A>                            ;A contains 8 received data bits
+                            ;read MSB-first from DATA_IN
+                            ;----
+CODE:CODE:0256  83              RET                                                  
+<A NAME="CODE:0257"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void write_mreg_from_ram(void)
+                                                          ;XREF[2,0]:   <A HREF="#CODE:0340">CODE:0340</A>,<A HREF="#CODE:0366">CODE:0366</A>
+CODE:CODE:0257  be80            MOV         R6,#0x80                                ;R6 - stores BUS value
+                                                                                    ; MREG_WD=1
+                                                                                    ; MREG_DATA=0000
+                                                                                    ; MREG_ADDR=000
+<A NAME="CODE:0259"></A>                            ;The loop runs for 8 iterations, uses RLC
+                            ;for left shift and JC for break. Sort of:
+                            ; R7=1;
+                            ; while(1) {
+                            ;  ... stuff ...
+                            ;  C, R7 = (R7<<1) | C;
+                            ;  if(C) break;
+                            ; }
+                            ;
+                            ;
+                            ;C R7
+                            ;0 0000.0010 - after 1 iter
+                            ;...
+                            ;0 1000.0000 - after 7 iter
+                            ;1 0000.0000 - after 8 iter -> break
+                            ;----
+CODE:CODE:0259  bf01            MOV         R7,#0x1                                 ;R7=1
+<A NAME="CODE:025b"></A>                            ;
+                            ;
+                            ;DATA:3c~3f stores MREG map:
+                            ;   u8 mreg_map[4];
+                            ;Outputs of MREG are as follows:
+                            ;  MREG_Q[7:0] = mreg_map[0];
+                            ;  MREG_Q[15:8] = mreg_map[1];
+                            ;  MREG_Q[23:16] = mreg_map[2];
+                            ;  MREG_Q[31:24] = mreg_map[3];
+                            mreg_write_loop:              ;XREF[1,0]:   <A HREF="#CODE:028d">CODE:028d</A>
+CODE:CODE:025b  b83b            MOV         R0,#0x3b                                ;DATA:3b (after INC becomes DATA:3c)
+<A NAME="CODE:025d"></A>CODE:CODE:025d  548f            CALL        <A HREF="#CODE:028f">check_bit_in_mreg_map</A>                   ;undefined check_bit_in_mreg_map()
+<A NAME="CODE:025f"></A>CODE:CODE:025f  c665            JZ          <A HREF="#CODE:0265">data0_is_not_set</A>                        ;Jump if (R7 & *(0x3c))==0
+                                                                                    ;NOTE: R7 is one-hot and
+                                                                                    ; selects a single bit!
+<A NAME="CODE:0261"></A>CODE:CODE:0261  2308            MOV         A,#0x8                                  
+<A NAME="CODE:0263"></A>CODE:CODE:0263  4e              ORL         A,R6                                    
+<A NAME="CODE:0264"></A>CODE:CODE:0264  ae              MOV         R6,A                                    ;R6 |= 1<<3 (MBUS_DATA[0]=1)
+<A NAME="CODE:0265"></A>                            data0_is_not_set:             ;XREF[1,0]:   <A HREF="#CODE:025f">CODE:025f</A>
+CODE:CODE:0265  548f            CALL        <A HREF="#CODE:028f">check_bit_in_mreg_map</A>                   ;undefined check_bit_in_mreg_map()
+<A NAME="CODE:0267"></A>CODE:CODE:0267  c66d            JZ          <A HREF="#CODE:026d">data1_is_not_set</A>                        ;Jump if (R7 & *(0x3d))==0
+<A NAME="CODE:0269"></A>CODE:CODE:0269  2310            MOV         A,#0x10                                 
+<A NAME="CODE:026b"></A>CODE:CODE:026b  4e              ORL         A,R6                                    
+<A NAME="CODE:026c"></A>CODE:CODE:026c  ae              MOV         R6,A                                    ;R6 |= 1<<4 (MBUS_DATA[1]=1)
+<A NAME="CODE:026d"></A>                            data1_is_not_set:             ;XREF[1,0]:   <A HREF="#CODE:0267">CODE:0267</A>
+CODE:CODE:026d  548f            CALL        <A HREF="#CODE:028f">check_bit_in_mreg_map</A>                   ;undefined check_bit_in_mreg_map()
+<A NAME="CODE:026f"></A>CODE:CODE:026f  c675            JZ          <A HREF="#CODE:0275">data2_is_not_set</A>                        ;Jump if (R7 & *(0x3e))==0
+<A NAME="CODE:0271"></A>CODE:CODE:0271  2320            MOV         A,#0x20                                 
+<A NAME="CODE:0273"></A>CODE:CODE:0273  4e              ORL         A,R6                                    
+<A NAME="CODE:0274"></A>CODE:CODE:0274  ae              MOV         R6,A                                    ;R6 |= 1<<5 (MBUS_DATA[2]=1)
+<A NAME="CODE:0275"></A>                            data2_is_not_set:             ;XREF[1,0]:   <A HREF="#CODE:026f">CODE:026f</A>
+CODE:CODE:0275  548f            CALL        <A HREF="#CODE:028f">check_bit_in_mreg_map</A>                   ;undefined check_bit_in_mreg_map()
+<A NAME="CODE:0277"></A>CODE:CODE:0277  c67b            JZ          <A HREF="#CODE:027b">data3_is_not_set</A>                        ;Jump if (R7 & *(0x3f))==0
+<A NAME="CODE:0279"></A>CODE:CODE:0279  2340            MOV         A,#0x40                                 
+<A NAME="CODE:027b"></A>                            ;
+                            ;NOTE: we could've ended here only after
+                            ;checking if data3 bit needs to be set.
+                            ;If yes, A=0x40, BUS=R6|A=R6|DATA3
+                            ;If not, A=0 because we got here via JZ!
+                            ;   so BUS=R6 - and bit is not set
+                            data3_is_not_set:             ;XREF[1,0]:   <A HREF="#CODE:0277">CODE:0277</A>
+CODE:CODE:027b  4e              ORL         A,R6                                    ;A = R6|1<<6 if data3 should be set
+                                                                                    ;else
+                                                                                    ;A = R6
+                                                                                    ;
+<A NAME="CODE:027c"></A>CODE:CODE:027c  02              OUTL        BUS,A                                   ;BUS=0x80|(data<<3)|addr
+<A NAME="CODE:027d"></A>CODE:CODE:027d  537f            ANL         A,#0x7f                                 
+<A NAME="CODE:027f"></A>CODE:CODE:027f  02              OUTL        BUS,A                                   ;BUS=(data<<3)|addr, MREG write strobe
+<A NAME="CODE:0280"></A>CODE:CODE:0280  4380            ORL         A,#0x80                                 
+<A NAME="CODE:0282"></A>CODE:CODE:0282  02              OUTL        BUS,A                                   ;BUS=0x80|(data<<3)|addr
+<A NAME="CODE:0283"></A>CODE:CODE:0283  ff              MOV         A,R7                                    
+<A NAME="CODE:0284"></A>CODE:CODE:0284  f7              RLC         A                                       ;assuming C=0
+                                                                                    ;A=R7<<1
+                                                                                    ;C=R7>>7
+<A NAME="CODE:0285"></A>CODE:CODE:0285  f692            JC          <A HREF="#CODE:0292">check_bit_in_mreg_map::return</A>           ;if R7[7] was 1, return
+<A NAME="CODE:0287"></A>CODE:CODE:0287  af              MOV         R7,A                                    ;R7=R7<<1
+<A NAME="CODE:0288"></A>CODE:CODE:0288  fe              MOV         A,R6                                    
+<A NAME="CODE:0289"></A>CODE:CODE:0289  5387            ANL         A,#0x87                                 ;A=0x80 | addr
+                                                                                    ;keeps MREG WD and ADDR untouched
+                                                                                    ;zeroes MREG DATA
+<A NAME="CODE:028b"></A>CODE:CODE:028b  17              INC         A                                       ;A=0x80 | (addr++)
+                                                                                    ;increments ADDR on the bus
+<A NAME="CODE:028c"></A>CODE:CODE:028c  ae              MOV         R6,A                                    ;R6=0x80 | (addr++)
+<A NAME="CODE:028d"></A>CODE:CODE:028d  445b            JMP         <A HREF="#CODE:025b">mreg_write_loop</A>                         
+<A NAME="CODE:028f"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined check_bit_in_mreg_map()
+                                                          ;XREF[4,0]:   <A HREF="#CODE:025d">CODE:025d</A>,<A HREF="#CODE:0265">CODE:0265</A>,<A HREF="#CODE:026d">CODE:026d</A>,<A HREF="#CODE:0275">CODE:0275</A>
+CODE:CODE:028f  18              INC         R0                                      
+<A NAME="CODE:0290"></A>CODE:CODE:0290  f0              MOV         A,@R0                                   
+<A NAME="CODE:0291"></A>CODE:CODE:0291  5f              ANL         A,R7                                    ;A = R7 & *(++R0)
+<A NAME="CODE:0292"></A>                            return:                       ;XREF[1,0]:   <A HREF="#CODE:0285">CODE:0285</A>
+CODE:CODE:0292  83              RET                                                  
+<A NAME="CODE:0293"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined run_test()
+                            ;###################################
+                            ;
+                            ;######## ########  ######  ######## 
+                            ;   ##    ##       ##    ##    ##    
+                            ;   ##    ##       ##          ##    
+                            ;   ##    ######    ######     ##    
+                            ;   ##    ##             ##    ##    
+                            ;   ##    ##       ##    ##    ##    
+                            ;   ##    ########  ######     ##    
+                            ;
+                            ;###################################
+                            ;
+                            ;Programs to be used during repair
+                            ;and adjustment of D1639 board.
+                            ;
+                            ;cmd:
+                            ;  {1'b1, arg[3:0], 3'bXXX}
+                            ;A:
+                            ;  {1'b0, arg[3:0], 3'b0}
+                            ;
+                            ;Above arg >= 1
+                            ;----
+                                                          ;XREF[1,0]:   <A HREF="#CODE:003d">CODE:003d</A>
+CODE:CODE:0293  e7              RL          A                                       
+<A NAME="CODE:0294"></A>CODE:CODE:0294  47              SWAP        A                                       ;A={4'b0, arg[3:0]}
+<A NAME="CODE:0295"></A>CODE:CODE:0295  07              DEC         A                                       
+<A NAME="CODE:0296"></A>CODE:CODE:0296  c6af            JZ          <A HREF="#CODE:02af">test_comm</A>                               ;arg==1
+<A NAME="CODE:0298"></A>CODE:CODE:0298  07              DEC         A                                       
+<A NAME="CODE:0299"></A>CODE:CODE:0299  969d            JNZ         <A HREF="#CODE:029d">arg_gt_2</A>                                
+<A NAME="CODE:029b"></A>CODE:CODE:029b  24b8            JMP         <A HREF="#CODE:01b8">test_mode26_Snul</A>                        ;arg==2
+<A NAME="CODE:029d"></A>                            arg_gt_2:                     ;XREF[1,0]:   <A HREF="#CODE:0299">CODE:0299</A>
+CODE:CODE:029d  07              DEC         A                                       
+<A NAME="CODE:029e"></A>CODE:CODE:029e  96a2            JNZ         <A HREF="#CODE:02a2">arg_gt_3</A>                                
+<A NAME="CODE:02a0"></A>CODE:CODE:02a0  64d8            JMP         <A HREF="#CODE:03d8">test_Snp_Snn_switches</A>                   ;arg==3
+<A NAME="CODE:02a2"></A>                            arg_gt_3:                     ;XREF[1,0]:   <A HREF="#CODE:029e">CODE:029e</A>
+CODE:CODE:02a2  07              DEC         A                                       
+<A NAME="CODE:02a3"></A>CODE:CODE:02a3  c6b9            JZ          <A HREF="#CODE:02b9">test_Sn1p_Sn1n_switches</A>                 ;arg==4
+<A NAME="CODE:02a5"></A>CODE:CODE:02a5  07              DEC         A                                       
+<A NAME="CODE:02a6"></A>CODE:CODE:02a6  c6d9            JZ          <A HREF="#CODE:02d9">test_comparator_K1</A>                      ;arg==5
+<A NAME="CODE:02a8"></A>CODE:CODE:02a8  07              DEC         A                                       
+<A NAME="CODE:02a9"></A>CODE:CODE:02a9  96ad            JNZ         <A HREF="#CODE:02ad">arg_gt_6</A>                                
+<A NAME="CODE:02ab"></A>CODE:CODE:02ab  24c1            JMP         <A HREF="#CODE:01c1">test_comparator_K2</A>                      ;arg==6
+<A NAME="CODE:02ad"></A>                            arg_gt_6:                     ;XREF[1,0]:   <A HREF="#CODE:02a9">CODE:02a9</A>
+CODE:CODE:02ad  24dc            JMP         <A HREF="#CODE:01dc">test_mode27_28_Sx_Snul</A>                  ;arg>=7
+<A NAME="CODE:02af"></A>                            ;
+                            ;---------
+                            ;> test_comm
+                            ;
+                            ;Rx byte and echo it back via Tx 255 times
+                            ;---------
+                            test_comm:                    ;XREF[1,0]:   <A HREF="#CODE:0296">CODE:0296</A>
+CODE:CODE:02af  bbff            MOV         R3,#0xff                                
+<A NAME="CODE:02b1"></A>                            test_comm_loop.0:             ;XREF[1,0]:   <A HREF="#CODE:02b5">CODE:02b5</A>
+CODE:CODE:02b1  542d            CALL        <A HREF="#CODE:022d">comm_recv_1byte</A>                         ;void comm_recv_1byte(void)
+<A NAME="CODE:02b3"></A>CODE:CODE:02b3  34ff            CALL        <A HREF="#CODE:01ff">comm_send_1byte</A>                         ;undefined comm_send_1byte()
+<A NAME="CODE:02b5"></A>CODE:CODE:02b5  ebb1            DJNZ        R3,<A HREF="#CODE:02b1">test_comm_loop.0</A>                     
+<A NAME="CODE:02b7"></A>CODE:CODE:02b7  040e            JMP         <A HREF="#CODE:000e">main_loop</A>                               
+<A NAME="CODE:02b9"></A>                            test_Sn1p_Sn1n_switches:      ;XREF[2,0]:   <A HREF="#CODE:02a3">CODE:02a3</A>,<A HREF="#CODE:02d7">CODE:02d7</A>
+CODE:CODE:02b9  2320            MOV         A,#0x20                                 
+<A NAME="CODE:02bb"></A>CODE:CODE:02bb  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:02bc"></A>CODE:CODE:02bc  bb05            MOV         R3,#0x5                                 
+<A NAME="CODE:02be"></A>CODE:CODE:02be  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 5 ms
+<A NAME="CODE:02c0"></A>CODE:CODE:02c0  2304            MOV         A,#0x4                                  
+<A NAME="CODE:02c2"></A>CODE:CODE:02c2  3a              OUTL        P2,A                                    ;Sn1+ ON
+<A NAME="CODE:02c3"></A>CODE:CODE:02c3  bb14            MOV         R3,#0x14                                
+<A NAME="CODE:02c5"></A>CODE:CODE:02c5  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 20 ms
+<A NAME="CODE:02c7"></A>CODE:CODE:02c7  2320            MOV         A,#0x20                                 
+<A NAME="CODE:02c9"></A>CODE:CODE:02c9  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:02ca"></A>CODE:CODE:02ca  bb05            MOV         R3,#0x5                                 
+<A NAME="CODE:02cc"></A>CODE:CODE:02cc  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 5 ms
+<A NAME="CODE:02ce"></A>CODE:CODE:02ce  2310            MOV         A,#0x10                                 
+<A NAME="CODE:02d0"></A>CODE:CODE:02d0  3a              OUTL        P2,A                                    ;Sn1- ON
+<A NAME="CODE:02d1"></A>CODE:CODE:02d1  bb14            MOV         R3,#0x14                                
+<A NAME="CODE:02d3"></A>CODE:CODE:02d3  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 20 ms
+<A NAME="CODE:02d5"></A>CODE:CODE:02d5  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:02d7"></A>CODE:CODE:02d7  44b9            JMP         <A HREF="#CODE:02b9">test_Sn1p_Sn1n_switches</A>                 
+<A NAME="CODE:02d9"></A>                            test_comparator_K1:           ;XREF[1,0]:   <A HREF="#CODE:02a6">CODE:02a6</A>
+CODE:CODE:02d9  2320            MOV         A,#0x20                                 
+<A NAME="CODE:02db"></A>CODE:CODE:02db  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:02dc"></A>                            test_comparator_K1_loop.0:    ;XREF[1,0]:   <A HREF="#CODE:02f2">CODE:02f2</A>
+CODE:CODE:02dc  2308            MOV         A,#0x8                                  
+<A NAME="CODE:02de"></A>CODE:CODE:02de  3a              OUTL        P2,A                                    ;Sn- ON
+<A NAME="CODE:02df"></A>                            vint_neg_loop.0:              ;XREF[1,0]:   <A HREF="#CODE:02e1">CODE:02e1</A>
+CODE:CODE:02df  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:02e1"></A>CODE:CODE:02e1  56df            JT1         <A HREF="#CODE:02df">vint_neg_loop.0</A>                         ;Wait till Vint becomes > 0V
+<A NAME="CODE:02e3"></A>                            vint_in_k1_loop.0:            ;XREF[1,0]:   <A HREF="#CODE:02e5">CODE:02e5</A>
+CODE:CODE:02e3  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:02e5"></A>CODE:CODE:02e5  86e3            JNI         <A HREF="#CODE:02e3">vint_in_k1_loop.0</A>                       ;Wait till Vint goes
+                                                                                    ;out of K1 range
+<A NAME="CODE:02e7"></A>CODE:CODE:02e7  2302            MOV         A,#0x2                                  
+<A NAME="CODE:02e9"></A>CODE:CODE:02e9  3a              OUTL        P2,A                                    ;Sn+ ON
+<A NAME="CODE:02ea"></A>                            vint_pos_loop.0:              ;XREF[1,0]:   <A HREF="#CODE:02ec">CODE:02ec</A>
+CODE:CODE:02ea  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:02ec"></A>CODE:CODE:02ec  46ea            JNT1        <A HREF="#CODE:02ea">vint_pos_loop.0</A>                         ;Wait till Wint becomes < 0V
+<A NAME="CODE:02ee"></A>                            vint_in_k1_loop.1:            ;XREF[1,0]:   <A HREF="#CODE:02f0">CODE:02f0</A>
+CODE:CODE:02ee  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:02f0"></A>CODE:CODE:02f0  86ee            JNI         <A HREF="#CODE:02ee">vint_in_k1_loop.1</A>                       ;Wait till Vint goes out
+                                                                                    ;of K1 range
+<A NAME="CODE:02f2"></A>CODE:CODE:02f2  44dc            JMP         <A HREF="#CODE:02dc">test_comparator_K1_loop.0</A>               
+<A NAME="CODE:02f4"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void delay_ms(void)
+                                                          ;XREF[13,0]:  <A HREF="#CODE:000c">CODE:000c</A>,<A HREF="#CODE:01ee">CODE:01ee</A>,<A HREF="#CODE:01f5">CODE:01f5</A>,<A HREF="#CODE:01fc">CODE:01fc</A>
+                                                          ;             <A HREF="#CODE:02be">CODE:02be</A>,<A HREF="#CODE:02c5">CODE:02c5</A>,<A HREF="#CODE:02cc">CODE:02cc</A>,<A HREF="#CODE:02d3">CODE:02d3</A>
+                                                          ;             <A HREF="#CODE:02f8">CODE:02f8</A>,<A HREF="#CODE:03dd">CODE:03dd</A>,<A HREF="#CODE:03e4">CODE:03e4</A>,<A HREF="#CODE:03eb">CODE:03eb</A>
+                                                          ;             <A HREF="#CODE:03f2">CODE:03f2</A>
+CODE:CODE:02f4  bcc8            MOV         R4,#0xc8                                ;2 cycles
+<A NAME="CODE:02f6"></A>                            LAB_CODE_02f6:                ;XREF[1,0]:   <A HREF="#CODE:02f6">CODE:02f6</A>
+CODE:CODE:02f6  ecf6            DJNZ        R4,<A HREF="#CODE:02f6">LAB_CODE_02f6</A>                        ;400 cycles (2*200)
+<A NAME="CODE:02f8"></A>CODE:CODE:02f8  ebf4            DJNZ        R3,<A HREF="#CODE:02f4">delay_ms</A>                             ;R3*402 cycles
+                                                                                    ;Delay: R3*1.005ms
+<A NAME="CODE:02fa"></A>CODE:CODE:02fa  83              RET                                                  
+<A NAME="CODE:02fb"></A>CODE:CODE:02fb  00              ??          00h                                     
+<A NAME="CODE:02fc"></A>CODE:CODE:02fc  00              ??          00h                                     
+<A NAME="CODE:02fd"></A>CODE:CODE:02fd  00              ??          00h                                     
+<A NAME="CODE:02fe"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void set_mode(void)
+                            ;
+                            ;
+                            ;-IN
+                            ;A[7:0] = {2'bXX, fil, mode[4:0]}
+                                                          ;XREF[5,0]:   <A HREF="#CODE:0008">CODE:0008</A>,<A HREF="#CODE:0013">CODE:0013</A>,<A HREF="#CODE:01ba">CODE:01ba</A>,<A HREF="#CODE:01de">CODE:01de</A>
+                                                          ;             <A HREF="#CODE:01e4">CODE:01e4</A>
+CODE:CODE:02fe  85              CLR         F0                                      
+<A NAME="CODE:02ff"></A>CODE:CODE:02ff  a5              CLR         F1                                      
+<A NAME="CODE:0300"></A>CODE:CODE:0300  b203            JB0x5       <A HREF="#CODE:0303">fil_is_set</A>                              
+<A NAME="CODE:0302"></A>                            fil_not_set:                  
+CODE:CODE:0302  95              CPL         F0                                      ;F0 = !fil
+<A NAME="CODE:0303"></A>                            fil_is_set:                   ;XREF[1,0]:   <A HREF="#CODE:0300">CODE:0300</A>
+CODE:CODE:0303  531f            ANL         A,#0x1f                                 ;A=mode, 0<=mode<=31
+<A NAME="CODE:0305"></A>CODE:CODE:0305  af              MOV         R7,A                                    ;R7=A=mode
+<A NAME="CODE:0306"></A>CODE:CODE:0306  b83c            MOV         R0,#0x3c                                ;R0=&mreg_map
+<A NAME="CODE:0308"></A>CODE:CODE:0308  0306            ADD         A,#0x6                                  
+<A NAME="CODE:030a"></A>CODE:CODE:030a  b242            JB0x5       <A HREF="#CODE:0342">handle_mode_26to31</A>                      ;Jump if mode>=26
+                                                                                    ;(man man man, why not just JC??)
+<A NAME="CODE:030c"></A>                            ;
+                            ;
+                            ;here 0<=mode<=25
+CODE:CODE:030c  b93e            MOV         R1,#0x3e                                
+<A NAME="CODE:030e"></A>CODE:CODE:030e  f1              MOV         A,<A HREF="#INTMEM:3e">@R1=>INTMEM:mreg_map[2]</A>               ;A=mreg_map[2]=Q[23:16]
+<A NAME="CODE:030f"></A>CODE:CODE:030f  37              CPL         A                                       
+<A NAME="CODE:0310"></A>CODE:CODE:0310  530c            ANL         A,#0xc                                  ;A={0000,~Q[19:18],00}
+<A NAME="CODE:0312"></A>CODE:CODE:0312  9615            JNZ         <A HREF="#CODE:0315">LAB_CODE_0315</A>                           ;Jump if Q[18]&Q[19]==0
+<A NAME="CODE:0314"></A>CODE:CODE:0314  b5              CPL         F1                                      ;F1=1
+<A NAME="CODE:0315"></A>                            LAB_CODE_0315:                ;XREF[1,0]:   <A HREF="#CODE:0312">CODE:0312</A>
+CODE:CODE:0315  761d            JF1         <A HREF="#CODE:031d">LAB_CODE_031d</A>                           ;continue executing only if
+                                                                                    ;Q[18]&Q[19]=0
+<A NAME="CODE:0317"></A>CODE:CODE:0317  ff              MOV         A,R7                                    ;A=mode
+<A NAME="CODE:0318"></A>CODE:CODE:0318  030c            ADD         A,#0xc                                  
+<A NAME="CODE:031a"></A>CODE:CODE:031a  b21d            JB0x5       <A HREF="#CODE:031d">LAB_CODE_031d</A>                           ;jump if 20<=mode<=25
+<A NAME="CODE:031c"></A>CODE:CODE:031c  b5              CPL         F1                                      ;F1=1
+<A NAME="CODE:031d"></A>                            ;
+                            ;
+                            ;Here,
+                            ;F1 = (Q[18]&Q[19]) | (mode>=20)
+                            LAB_CODE_031d:                ;XREF[2,0]:   <A HREF="#CODE:0315">CODE:0315</A>,<A HREF="#CODE:031a">CODE:031a</A>
+CODE:CODE:031d  ff              MOV         A,R7                                    ;A=mode=000x.xxxx
+<A NAME="CODE:031e"></A>CODE:CODE:031e  e7              RL          A                                       
+<A NAME="CODE:031f"></A>CODE:CODE:031f  e7              RL          A                                       
+<A NAME="CODE:0320"></A>CODE:CODE:0320  0368            ADD         A,#0x68                                 ;A = 0x68 + 4*mode
+<A NAME="CODE:0322"></A>CODE:CODE:0322  a9              MOV         R1,A                                    ;R1 = 0x68 + 4*mode
+<A NAME="CODE:0323"></A>CODE:CODE:0323  a3              MOVP        A,@A                                    
+<A NAME="CODE:0324"></A>CODE:CODE:0324  a0              MOV         <A HREF="#INTMEM:3c">@R0=>INTMEM:mreg_map</A>,A                  ;mreg_map[0] = ROM[0x368+4*mode]
+<A NAME="CODE:0325"></A>CODE:CODE:0325  18              INC         R0                                      
+<A NAME="CODE:0326"></A>CODE:CODE:0326  19              INC         R1                                      
+<A NAME="CODE:0327"></A>CODE:CODE:0327  f9              MOV         A,R1                                    
+<A NAME="CODE:0328"></A>CODE:CODE:0328  a3              MOVP        A,@A                                    ;A = ROM[0x369+4*mode] = Q[15:8]
+<A NAME="CODE:0329"></A>CODE:CODE:0329  b62d            JF0         <A HREF="#CODE:032d">LAB_CODE_032d</A>                           
+<A NAME="CODE:032b"></A>CODE:CODE:032b  4301            ORL         A,#0x1                                  ;Set Q[8]=S[6]
+                                                                                    ;(Re2 on D1639)
+                                                                                    ;if fil==1
+<A NAME="CODE:032d"></A>                            LAB_CODE_032d:                ;XREF[1,0]:   <A HREF="#CODE:0329">CODE:0329</A>
+CODE:CODE:032d  a0              MOV         <A HREF="#INTMEM:3d">@R0=>INTMEM:mreg_map[1]</A>,A               ;mreg_map[1] = ROM[0x369+4*mode] | fil
+<A NAME="CODE:032e"></A>CODE:CODE:032e  18              INC         R0                                      
+<A NAME="CODE:032f"></A>CODE:CODE:032f  19              INC         R1                                      
+<A NAME="CODE:0330"></A>CODE:CODE:0330  f9              MOV         A,R1                                    
+<A NAME="CODE:0331"></A>CODE:CODE:0331  a3              MOVP        A,@A                                    ;A = ROM[0x36a+4*mode] = Q[23:16]
+<A NAME="CODE:0332"></A>CODE:CODE:0332  7636            JF1         <A HREF="#CODE:0336">LAB_CODE_0336</A>                           
+<A NAME="CODE:0334"></A>CODE:CODE:0334  53f3            ANL         A,#0xf3                                 ;Clear Q[19:18]=S[17:16]
+                                                                                    ;(Re13~14 on D1642)
+                            ;---
+                            ;This means, Q[19:18]:
+                            ;- if mode >= 20 - can be set individually
+                            ;- else - can be enabled only simultaneously
+                            ;
+                            ;
+<A NAME="CODE:0336"></A>                            LAB_CODE_0336:                ;XREF[1,0]:   <A HREF="#CODE:0332">CODE:0332</A>
+CODE:CODE:0336  a0              MOV         <A HREF="#INTMEM:3e">@R0=>INTMEM:mreg_map[2]</A>,A               ;mreg_map[2] = ROM[0x36a+4*mode] & ~R...
+<A NAME="CODE:0337"></A>CODE:CODE:0337  18              INC         R0                                      
+<A NAME="CODE:0338"></A>CODE:CODE:0338  19              INC         R1                                      
+<A NAME="CODE:0339"></A>CODE:CODE:0339  f9              MOV         A,R1                                    
+<A NAME="CODE:033a"></A>CODE:CODE:033a  a3              MOVP        A,@A                                    
+<A NAME="CODE:033b"></A>CODE:CODE:033b  b63f            JF0         <A HREF="#CODE:033f">LAB_CODE_033f</A>                           
+<A NAME="CODE:033d"></A>CODE:CODE:033d  4380            ORL         A,#0x80                                 ;if(fil) set Q[31]=S[29]
+                                                                                    ;(T8,I7 on D1638)
+<A NAME="CODE:033f"></A>                            LAB_CODE_033f:                ;XREF[1,0]:   <A HREF="#CODE:033b">CODE:033b</A>
+CODE:CODE:033f  a0              MOV         <A HREF="#INTMEM:3f">@R0=>INTMEM:mreg_map[3]</A>,A               ;mreg_map[3] = ROM[0x36b+4*mode] | (f...
+<A NAME="CODE:0340"></A>CODE:CODE:0340  4457            JMP         <A HREF="#CODE:0257">write_mreg_from_ram</A>                     ;void write_mreg_from_ram(void)
+<A NAME="CODE:0342"></A>                            ;
+                            ;
+                            ;26<=mode<=31. In these modes,
+                            ;Q[2:0] (A[2:0] on schematic)
+                            ;is set in a fixed way:
+                            ;    A[2:0]
+                            ; 26 - 100
+                            ; 27 - 101
+                            ; 28 - 110
+                            ; 29 - 110
+                            ; 30 - 100
+                            ; 31 - 101
+                            ;
+                            ;These look like calibration modes to me.
+                            ;
+                            ;NOTE: they way this is decoded...
+                            ;   These Czechoslovakian guys
+                            ;        deserve a prize!
+                            ;-----
+                            handle_mode_26to31:           ;XREF[1,0]:   <A HREF="#CODE:030a">CODE:030a</A>
+CODE:CODE:0342  5303            ANL         A,#0x3                                  ;A=(mode+6)&3
+<A NAME="CODE:0344"></A>CODE:CODE:0344  ac              MOV         R4,A                                    ;R4 = (mode+6)&0b11
+<A NAME="CODE:0345"></A>CODE:CODE:0345  f0              MOV         A,<A HREF="#INTMEM:3c">@R0=>INTMEM:mreg_map</A>                  ;A = mreg_map[0] = Q[7:0]
+                                                                                    ;A = {S[5:1], A[2:0]}
+<A NAME="CODE:0346"></A>CODE:CODE:0346  53f8            ANL         A,#0xf8                                 ;A = {S[5:1], b000}
+<A NAME="CODE:0348"></A>CODE:CODE:0348  ae              MOV         R6,A                                    ;R6 = {S[5:1], b000}
+<A NAME="CODE:0349"></A>CODE:CODE:0349  fc              MOV         A,R4                                    
+<A NAME="CODE:034a"></A>CODE:CODE:034a  c659            JZ          <A HREF="#CODE:0359">LAB_CODE_0359</A>                           
+<A NAME="CODE:034c"></A>CODE:CODE:034c  07              DEC         A                                       
+<A NAME="CODE:034d"></A>CODE:CODE:034d  c654            JZ          <A HREF="#CODE:0354">LAB_CODE_0354</A>                           ;I had to write python code
+                                                                                    ;to understand how these jumps
+                                                                                    ;are triggered..
+<A NAME="CODE:034f"></A>                            ;
+                            ;
+                            ;Triggered for mode != 26,27,30,31
+CODE:CODE:034f  fe              MOV         A,R6                                    
+<A NAME="CODE:0350"></A>CODE:CODE:0350  4306            ORL         A,#0x6                                  ;A[2:0] = 110
+<A NAME="CODE:0352"></A>CODE:CODE:0352  645c            JMP         <A HREF="#CODE:035c">LAB_CODE_035c</A>                           
+<A NAME="CODE:0354"></A>                            ;
+                            ;
+                            ;Triggered for mode=27,31
+                            LAB_CODE_0354:                ;XREF[1,0]:   <A HREF="#CODE:034d">CODE:034d</A>
+CODE:CODE:0354  fe              MOV         A,R6                                    
+<A NAME="CODE:0355"></A>CODE:CODE:0355  4305            ORL         A,#0x5                                  ;A[2:0] = 101
+<A NAME="CODE:0357"></A>CODE:CODE:0357  645c            JMP         <A HREF="#CODE:035c">LAB_CODE_035c</A>                           
+<A NAME="CODE:0359"></A>                            ;
+                            ;Triggered for mode=26,30
+                            LAB_CODE_0359:                ;XREF[1,0]:   <A HREF="#CODE:034a">CODE:034a</A>
+CODE:CODE:0359  fe              MOV         A,R6                                    
+<A NAME="CODE:035a"></A>CODE:CODE:035a  4304            ORL         A,#0x4                                  ;A[2:0] = 100
+<A NAME="CODE:035c"></A>                            LAB_CODE_035c:                ;XREF[2,0]:   <A HREF="#CODE:0352">CODE:0352</A>,<A HREF="#CODE:0357">CODE:0357</A>
+CODE:CODE:035c  a0              MOV         <A HREF="#INTMEM:3c">@R0=>INTMEM:mreg_map</A>,A                  ;mreg_map[0] = Q[7:0]
+<A NAME="CODE:035d"></A>CODE:CODE:035d  18              INC         R0                                      
+<A NAME="CODE:035e"></A>CODE:CODE:035e  f0              MOV         A,<A HREF="#INTMEM:3d">@R0=>INTMEM:mreg_map[1]</A>               ;A = mreg_map[1] = Q[15:8]
+<A NAME="CODE:035f"></A>CODE:CODE:035f  b263            JB0x5       <A HREF="#CODE:0363">LAB_CODE_0363</A>                           
+<A NAME="CODE:0361"></A>CODE:CODE:0361  53fe            ANL         A,#0xfe                                 ;if Q[13]=S[11] not set
+                                                                                    ;(Re6~9 on D1642)
+                                                                                    ;clear Q[8]=S[6]
+                                                                                    ;(Re2 on D1639)
+<A NAME="CODE:0363"></A>                            LAB_CODE_0363:                ;XREF[1,0]:   <A HREF="#CODE:035f">CODE:035f</A>
+CODE:CODE:0363  4360            ORL         A,#0x60                                 ;set Q[14:13]=S[12:11]
+                                                                                    ;(Re6~9 & +5V on D1642)
+                                                                                    ;
+<A NAME="CODE:0365"></A>CODE:CODE:0365  a0              MOV         <A HREF="#INTMEM:3d">@R0=>INTMEM:mreg_map[1]</A>,A               ;write back mreg_map[1]=Q[15:8]
+                                                                                    ;
+<A NAME="CODE:0366"></A>CODE:CODE:0366  4457            JMP         <A HREF="#CODE:0257">write_mreg_from_ram</A>                     ;void write_mreg_from_ram(void)
+<A NAME="CODE:0368"></A>                            tbl_mreg_modes:               
+CODE:CODE:0368  88feff029...    db[26][4]                                           
+<A NAME="CODE:0368"></A>   |_CODE:CODE:0368  [0]             db[4]                                               
+<A NAME="CODE:0368"></A>      |_CODE:CODE:0368  [0]             db          88h                                     
+<A NAME="CODE:0369"></A>      |_CODE:CODE:0369  [1]             db          FEh                                     
+<A NAME="CODE:036a"></A>      |_CODE:CODE:036a  [2]             db          FFh                                     
+<A NAME="CODE:036b"></A>      |_CODE:CODE:036b  [3]             db          2h                                      
+<A NAME="CODE:036c"></A>   |_CODE:CODE:036c  [1]             db[4]                                               
+<A NAME="CODE:036c"></A>      |_CODE:CODE:036c  [0]             db          90h                                     
+<A NAME="CODE:036d"></A>      |_CODE:CODE:036d  [1]             db          FEh                                     
+<A NAME="CODE:036e"></A>      |_CODE:CODE:036e  [2]             db          FFh                                     
+<A NAME="CODE:036f"></A>      |_CODE:CODE:036f  [3]             db          2h                                      
+<A NAME="CODE:0370"></A>   |_CODE:CODE:0370  [2]             db[4]                                               
+<A NAME="CODE:0370"></A>      |_CODE:CODE:0370  [0]             db          A0h                                     
+<A NAME="CODE:0371"></A>      |_CODE:CODE:0371  [1]             db          FEh                                     
+<A NAME="CODE:0372"></A>      |_CODE:CODE:0372  [2]             db          FFh                                     
+<A NAME="CODE:0373"></A>      |_CODE:CODE:0373  [3]             db          2h                                      
+<A NAME="CODE:0374"></A>   |_CODE:CODE:0374  [3]             db[4]                                               
+<A NAME="CODE:0374"></A>      |_CODE:CODE:0374  [0]             db          10h                                     
+<A NAME="CODE:0375"></A>      |_CODE:CODE:0375  [1]             db          7Eh                                     
+<A NAME="CODE:0376"></A>      |_CODE:CODE:0376  [2]             db          FFh                                     
+<A NAME="CODE:0377"></A>      |_CODE:CODE:0377  [3]             db          2h                                      
+<A NAME="CODE:0378"></A>   |_CODE:CODE:0378  [4]             db[4]                                               
+<A NAME="CODE:0378"></A>      |_CODE:CODE:0378  [0]             db          20h                                     
+<A NAME="CODE:0379"></A>      |_CODE:CODE:0379  [1]             db          FEh                                     
+<A NAME="CODE:037a"></A>      |_CODE:CODE:037a  [2]             db          FEh                                     
+<A NAME="CODE:037b"></A>      |_CODE:CODE:037b  [3]             db          2h                                      
+<A NAME="CODE:037c"></A>   |_CODE:CODE:037c  [5]             db[4]                                               
+<A NAME="CODE:037c"></A>      |_CODE:CODE:037c  [0]             db          8h                                      
+<A NAME="CODE:037d"></A>      |_CODE:CODE:037d  [1]             db          FEh                                     
+<A NAME="CODE:037e"></A>      |_CODE:CODE:037e  [2]             db          FBh                                     
+<A NAME="CODE:037f"></A>      |_CODE:CODE:037f  [3]             db          2h                                      
+<A NAME="CODE:0380"></A>   |_CODE:CODE:0380  [6]             db[4]                                               
+<A NAME="CODE:0380"></A>      |_CODE:CODE:0380  [0]             db          8h                                      
+<A NAME="CODE:0381"></A>      |_CODE:CODE:0381  [1]             db          FEh                                     
+<A NAME="CODE:0382"></A>      |_CODE:CODE:0382  [2]             db          F7h                                     
+<A NAME="CODE:0383"></A>      |_CODE:CODE:0383  [3]             db          2h                                      
+<A NAME="CODE:0384"></A>   |_CODE:CODE:0384  [7]             db[4]                                               
+<A NAME="CODE:0384"></A>      |_CODE:CODE:0384  [0]             db          91h                                     
+<A NAME="CODE:0385"></A>      |_CODE:CODE:0385  [1]             db          DCh                                     
+<A NAME="CODE:0386"></A>      |_CODE:CODE:0386  [2]             db          FFh                                     
+<A NAME="CODE:0387"></A>      |_CODE:CODE:0387  [3]             db          2h                                      
+<A NAME="CODE:0388"></A>   |_CODE:CODE:0388  [8]             db[4]                                               
+<A NAME="CODE:0388"></A>      |_CODE:CODE:0388  [0]             db          91h                                     
+<A NAME="CODE:0389"></A>      |_CODE:CODE:0389  [1]             db          DAh                                     
+<A NAME="CODE:038a"></A>      |_CODE:CODE:038a  [2]             db          FFh                                     
+<A NAME="CODE:038b"></A>      |_CODE:CODE:038b  [3]             db          2h                                      
+<A NAME="CODE:038c"></A>   |_CODE:CODE:038c  [9]             db[4]                                               
+<A NAME="CODE:038c"></A>      |_CODE:CODE:038c  [0]             db          A1h                                     
+<A NAME="CODE:038d"></A>      |_CODE:CODE:038d  [1]             db          DAh                                     
+<A NAME="CODE:038e"></A>      |_CODE:CODE:038e  [2]             db          FFh                                     
+<A NAME="CODE:038f"></A>      |_CODE:CODE:038f  [3]             db          2h                                      
+<A NAME="CODE:0390"></A>   |_CODE:CODE:0390  [10]            db[4]                                               
+<A NAME="CODE:0390"></A>      |_CODE:CODE:0390  [0]             db          A1h                                     
+<A NAME="CODE:0391"></A>      |_CODE:CODE:0391  [1]             db          D6h                                     
+<A NAME="CODE:0392"></A>      |_CODE:CODE:0392  [2]             db          FFh                                     
+<A NAME="CODE:0393"></A>      |_CODE:CODE:0393  [3]             db          2h                                      
+<A NAME="CODE:0394"></A>   |_CODE:CODE:0394  [11]            db[4]                                               
+<A NAME="CODE:0394"></A>      |_CODE:CODE:0394  [0]             db          A1h                                     
+<A NAME="CODE:0395"></A>      |_CODE:CODE:0395  [1]             db          CEh                                     
+<A NAME="CODE:0396"></A>      |_CODE:CODE:0396  [2]             db          FFh                                     
+<A NAME="CODE:0397"></A>      |_CODE:CODE:0397  [3]             db          2h                                      
+<A NAME="CODE:0398"></A>   |_CODE:CODE:0398  [12]            db[4]                                               
+<A NAME="CODE:0398"></A>      |_CODE:CODE:0398  [0]             db          A1h                                     
+<A NAME="CODE:0399"></A>      |_CODE:CODE:0399  [1]             db          DEh                                     
+<A NAME="CODE:039a"></A>      |_CODE:CODE:039a  [2]             db          FFh                                     
+<A NAME="CODE:039b"></A>      |_CODE:CODE:039b  [3]             db          2h                                      
+<A NAME="CODE:039c"></A>   |_CODE:CODE:039c  [13]            db[4]                                               
+<A NAME="CODE:039c"></A>      |_CODE:CODE:039c  [0]             db          42h                                     
+<A NAME="CODE:039d"></A>      |_CODE:CODE:039d  [1]             db          FEh                                     
+<A NAME="CODE:039e"></A>      |_CODE:CODE:039e  [2]             db          AFh                                     
+<A NAME="CODE:039f"></A>      |_CODE:CODE:039f  [3]             db          36h                                     
+<A NAME="CODE:03a0"></A>   |_CODE:CODE:03a0  [14]            db[4]                                               
+<A NAME="CODE:03a0"></A>      |_CODE:CODE:03a0  [0]             db          42h                                     
+<A NAME="CODE:03a1"></A>      |_CODE:CODE:03a1  [1]             db          FEh                                     
+<A NAME="CODE:03a2"></A>      |_CODE:CODE:03a2  [2]             db          AFh                                     
+<A NAME="CODE:03a3"></A>      |_CODE:CODE:03a3  [3]             db          22h                                     
+<A NAME="CODE:03a4"></A>   |_CODE:CODE:03a4  [15]            db[4]                                               
+<A NAME="CODE:03a4"></A>      |_CODE:CODE:03a4  [0]             db          42h                                     
+<A NAME="CODE:03a5"></A>      |_CODE:CODE:03a5  [1]             db          FEh                                     
+<A NAME="CODE:03a6"></A>      |_CODE:CODE:03a6  [2]             db          4Fh                                     
+<A NAME="CODE:03a7"></A>      |_CODE:CODE:03a7  [3]             db          3Ah                                     
+<A NAME="CODE:03a8"></A>   |_CODE:CODE:03a8  [16]            db[4]                                               
+<A NAME="CODE:03a8"></A>      |_CODE:CODE:03a8  [0]             db          42h                                     
+<A NAME="CODE:03a9"></A>      |_CODE:CODE:03a9  [1]             db          FEh                                     
+<A NAME="CODE:03aa"></A>      |_CODE:CODE:03aa  [2]             db          4Fh                                     
+<A NAME="CODE:03ab"></A>      |_CODE:CODE:03ab  [3]             db          42h                                     
+<A NAME="CODE:03ac"></A>   |_CODE:CODE:03ac  [17]            db[4]                                               
+<A NAME="CODE:03ac"></A>      |_CODE:CODE:03ac  [0]             db          42h                                     
+<A NAME="CODE:03ad"></A>      |_CODE:CODE:03ad  [1]             db          FEh                                     
+<A NAME="CODE:03ae"></A>      |_CODE:CODE:03ae  [2]             db          6Fh                                     
+<A NAME="CODE:03af"></A>      |_CODE:CODE:03af  [3]             db          53h                                     
+<A NAME="CODE:03b0"></A>   |_CODE:CODE:03b0  [18]            db[4]                                               
+<A NAME="CODE:03b0"></A>      |_CODE:CODE:03b0  [0]             db          42h                                     
+<A NAME="CODE:03b1"></A>      |_CODE:CODE:03b1  [1]             db          FEh                                     
+<A NAME="CODE:03b2"></A>      |_CODE:CODE:03b2  [2]             db          6Bh                                     
+<A NAME="CODE:03b3"></A>      |_CODE:CODE:03b3  [3]             db          36h                                     
+<A NAME="CODE:03b4"></A>   |_CODE:CODE:03b4  [19]            db[4]                                               
+<A NAME="CODE:03b4"></A>      |_CODE:CODE:03b4  [0]             db          42h                                     
+<A NAME="CODE:03b5"></A>      |_CODE:CODE:03b5  [1]             db          FEh                                     
+<A NAME="CODE:03b6"></A>      |_CODE:CODE:03b6  [2]             db          67h                                     
+<A NAME="CODE:03b7"></A>      |_CODE:CODE:03b7  [3]             db          36h                                     
+<A NAME="CODE:03b8"></A>   |_CODE:CODE:03b8  [20]            db[4]                                               
+<A NAME="CODE:03b8"></A>      |_CODE:CODE:03b8  [0]             db          42h                                     
+<A NAME="CODE:03b9"></A>      |_CODE:CODE:03b9  [1]             db          FEh                                     
+<A NAME="CODE:03ba"></A>      |_CODE:CODE:03ba  [2]             db          7Fh                                     
+<A NAME="CODE:03bb"></A>      |_CODE:CODE:03bb  [3]             db          2h                                      
+<A NAME="CODE:03bc"></A>   |_CODE:CODE:03bc  [21]            db[4]                                               
+<A NAME="CODE:03bc"></A>      |_CODE:CODE:03bc  [0]             db          42h                                     
+<A NAME="CODE:03bd"></A>      |_CODE:CODE:03bd  [1]             db          FEh                                     
+<A NAME="CODE:03be"></A>      |_CODE:CODE:03be  [2]             db          7Fh                                     
+<A NAME="CODE:03bf"></A>      |_CODE:CODE:03bf  [3]             db          12h                                     
+<A NAME="CODE:03c0"></A>   |_CODE:CODE:03c0  [22]            db[4]                                               
+<A NAME="CODE:03c0"></A>      |_CODE:CODE:03c0  [0]             db          43h                                     
+<A NAME="CODE:03c1"></A>      |_CODE:CODE:03c1  [1]             db          FEh                                     
+<A NAME="CODE:03c2"></A>      |_CODE:CODE:03c2  [2]             db          7Fh                                     
+<A NAME="CODE:03c3"></A>      |_CODE:CODE:03c3  [3]             db          12h                                     
+<A NAME="CODE:03c4"></A>   |_CODE:CODE:03c4  [23]            db[4]                                               
+<A NAME="CODE:03c4"></A>      |_CODE:CODE:03c4  [0]             db          Fh                                      
+<A NAME="CODE:03c5"></A>      |_CODE:CODE:03c5  [1]             db          FEh                                     
+<A NAME="CODE:03c6"></A>      |_CODE:CODE:03c6  [2]             db          FFh                                     
+<A NAME="CODE:03c7"></A>      |_CODE:CODE:03c7  [3]             db          2h                                      
+<A NAME="CODE:03c8"></A>   |_CODE:CODE:03c8  [24]            db[4]                                               
+<A NAME="CODE:03c8"></A>      |_CODE:CODE:03c8  [0]             db          9h                                      
+<A NAME="CODE:03c9"></A>      |_CODE:CODE:03c9  [1]             db          7Eh                                     
+<A NAME="CODE:03ca"></A>      |_CODE:CODE:03ca  [2]             db          FDh                                     
+<A NAME="CODE:03cb"></A>      |_CODE:CODE:03cb  [3]             db          2h                                      
+<A NAME="CODE:03cc"></A>   |_CODE:CODE:03cc  [25]            db[4]                                               
+<A NAME="CODE:03cc"></A>      |_CODE:CODE:03cc  [0]             db          8h                                      
+<A NAME="CODE:03cd"></A>      |_CODE:CODE:03cd  [1]             db          FEh                                     
+<A NAME="CODE:03ce"></A>      |_CODE:CODE:03ce  [2]             db          FFh                                     
+<A NAME="CODE:03cf"></A>      |_CODE:CODE:03cf  [3]             db          2h                                      
+<A NAME="CODE:03d0"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined reset_if_data_in_req()
+                                                          ;XREF[12,0]:  <A HREF="#CODE:01c7">CODE:01c7</A>,<A HREF="#CODE:01cb">CODE:01cb</A>,<A HREF="#CODE:01d2">CODE:01d2</A>,<A HREF="#CODE:01d6">CODE:01d6</A>
+                                                          ;             <A HREF="#CODE:01e8">CODE:01e8</A>,<A HREF="#CODE:0208">CODE:0208</A>,<A HREF="#CODE:02d5">CODE:02d5</A>,<A HREF="#CODE:02df">CODE:02df</A>
+                                                          ;             <A HREF="#CODE:02e3">CODE:02e3</A>,<A HREF="#CODE:02ea">CODE:02ea</A>,<A HREF="#CODE:02ee">CODE:02ee</A>,<A HREF="#CODE:03f4">CODE:03f4</A>
+CODE:CODE:03d0  09              IN          A,<A HREF="#PORT:01">P1=>PORT:DAT_PORT_01</A>                  ;= ??
+<A NAME="CODE:03d1"></A>CODE:CODE:03d1  92d7            JB0x4       <A HREF="#CODE:03d7">data_in_is_high</A>                         
+<A NAME="CODE:03d3"></A>                            data_in_is_low:               
+CODE:CODE:03d3  99fe            ANL         P1,#0xfe                                ;Set:
+                                                                                    ;DATA_OUT=1
+                                                                                    ;RDY_OUT=no change
+<A NAME="CODE:03d5"></A>CODE:CODE:03d5  040e            JMP         <A HREF="#CODE:000e">main_loop</A>                               ;Soft-reset by jumping
+                                                                                    ;straight into main loop
+<A NAME="CODE:03d7"></A>                            data_in_is_high:              ;XREF[1,0]:   <A HREF="#CODE:03d1">CODE:03d1</A>
+CODE:CODE:03d7  83              RET                                                  
+<A NAME="CODE:03d8"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined test_Snp_Snn_switches()
+                                                          ;XREF[2,0]:   <A HREF="#CODE:02a0">CODE:02a0</A>,<A HREF="#CODE:03f6">CODE:03f6</A>
+CODE:CODE:03d8  2320            MOV         A,#0x20                                 
+<A NAME="CODE:03da"></A>CODE:CODE:03da  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:03db"></A>CODE:CODE:03db  bb20            MOV         R3,#0x20                                
+<A NAME="CODE:03dd"></A>CODE:CODE:03dd  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 32 ms
+<A NAME="CODE:03df"></A>CODE:CODE:03df  2302            MOV         A,#0x2                                  
+<A NAME="CODE:03e1"></A>CODE:CODE:03e1  3a              OUTL        P2,A                                    ;Sn+ ON
+<A NAME="CODE:03e2"></A>CODE:CODE:03e2  bb02            MOV         R3,#0x2                                 
+<A NAME="CODE:03e4"></A>CODE:CODE:03e4  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 2 ms
+<A NAME="CODE:03e6"></A>CODE:CODE:03e6  2320            MOV         A,#0x20                                 
+<A NAME="CODE:03e8"></A>CODE:CODE:03e8  3a              OUTL        P2,A                                    ;Snul ON
+<A NAME="CODE:03e9"></A>CODE:CODE:03e9  bb20            MOV         R3,#0x20                                
+<A NAME="CODE:03eb"></A>CODE:CODE:03eb  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 32 ms
+<A NAME="CODE:03ed"></A>CODE:CODE:03ed  2308            MOV         A,#0x8                                  
+<A NAME="CODE:03ef"></A>CODE:CODE:03ef  3a              OUTL        P2,A                                    ;Sn- ON
+<A NAME="CODE:03f0"></A>CODE:CODE:03f0  bb02            MOV         R3,#0x2                                 
+<A NAME="CODE:03f2"></A>CODE:CODE:03f2  54f4            CALL        <A HREF="#CODE:02f4">delay_ms</A>                                ;Delay 2 ms
+<A NAME="CODE:03f4"></A>CODE:CODE:03f4  74d0            CALL        <A HREF="#CODE:03d0">reset_if_data_in_req</A>                    ;undefined reset_if_data_in_req()
+<A NAME="CODE:03f6"></A>CODE:CODE:03f6  64d8            JMP         <A HREF="#CODE:03d8">test_Snp_Snn_switches</A>                   
+<A NAME="CODE:03f8"></A>                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;undefined delay_28cyc_70us()
+                            ;Together with CALL, this function
+                            ;adds 28 cycle delay. That is, 70us
+                                                          ;XREF[1,0]:   <A HREF="#CODE:0146">CODE:0146</A>
+CODE:CODE:03f8  be0b            MOV         R6,#0xb                                 ;2 cyc
+<A NAME="CODE:03fa"></A>                            LAB_CODE_03fa:                ;XREF[1,0]:   <A HREF="#CODE:03fa">CODE:03fa</A>
+CODE:CODE:03fa  eefa            DJNZ        R6,<A HREF="#CODE:03fa">LAB_CODE_03fa</A>                        ;22 cyc
+<A NAME="CODE:03fc"></A>CODE:CODE:03fc  83              RET                                                  ;2 cyc
+<A NAME="CODE:03fd"></A>CODE:CODE:03fd  00              ??          00h                                     
+<A NAME="CODE:03fe"></A>CODE:CODE:03fe  00              ??          00h                                     
+<A NAME="CODE:03ff"></A>CODE:CODE:03ff  00              ??          00h                                     
+<A NAME="INTMEM:00"></A>                            BANK0_R0:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:01"></A>                            BANK0_R1:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:02"></A>                            BANK0_R2:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:03"></A>                            BANK0_R3:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:04"></A>                            BANK0_R4:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:05"></A>                            BANK0_R5:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:06"></A>                            BANK0_R6:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:07"></A>                            BANK0_R7:                     
+REG_BANK_0:IN...                ??          ??                                      
+<A NAME="INTMEM:08"></A>STACK:INTMEM:08                 ??          ??                                      
+<A NAME="INTMEM:09"></A>STACK:INTMEM:09                 ??          ??                                      
+<A NAME="INTMEM:0a"></A>STACK:INTMEM:0a                 ??          ??                                      
+<A NAME="INTMEM:0b"></A>STACK:INTMEM:0b                 ??          ??                                      
+<A NAME="INTMEM:0c"></A>STACK:INTMEM:0c                 ??          ??                                      
+<A NAME="INTMEM:0d"></A>STACK:INTMEM:0d                 ??          ??                                      
+<A NAME="INTMEM:0e"></A>STACK:INTMEM:0e                 ??          ??                                      
+<A NAME="INTMEM:0f"></A>STACK:INTMEM:0f                 ??          ??                                      
+<A NAME="INTMEM:10"></A>STACK:INTMEM:10                 ??          ??                                      
+<A NAME="INTMEM:11"></A>STACK:INTMEM:11                 ??          ??                                      
+<A NAME="INTMEM:12"></A>STACK:INTMEM:12                 ??          ??                                      
+<A NAME="INTMEM:13"></A>STACK:INTMEM:13                 ??          ??                                      
+<A NAME="INTMEM:14"></A>STACK:INTMEM:14                 ??          ??                                      
+<A NAME="INTMEM:15"></A>STACK:INTMEM:15                 ??          ??                                      
+<A NAME="INTMEM:16"></A>STACK:INTMEM:16                 ??          ??                                      
+<A NAME="INTMEM:17"></A>STACK:INTMEM:17                 ??          ??                                      
+<A NAME="INTMEM:18"></A>                            BANK1_R0:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:19"></A>                            BANK1_R1:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1a"></A>                            BANK1_R2:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1b"></A>                            BANK1_R3:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1c"></A>                            BANK1_R4:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1d"></A>                            BANK1_R5:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1e"></A>                            BANK1_R6:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:1f"></A>                            BANK1_R7:                     
+REG_BANK_1:IN...                ??          ??                                      
+<A NAME="INTMEM:20"></A>                            b_long_integration:           ;XREF[2,0]:   <A HREF="#CODE:002e">CODE:002e</A>,<A HREF="#CODE:0037">CODE:0037</A>
+INTMEM:INTMEM:20                db          ??                                      
+<A NAME="INTMEM:21"></A>                            t0:                           ;XREF[8,0]:   <A HREF="#CODE:00fb">CODE:00fb</A>,<A HREF="#CODE:010f">CODE:010f</A>,<A HREF="#CODE:0110">CODE:0110</A>,<A HREF="#CODE:0111">CODE:0111</A>
+                                                          ;             <A HREF="#CODE:0125">CODE:0125</A>,<A HREF="#CODE:0127">CODE:0127</A>,<A HREF="#CODE:0134">CODE:0134</A>,<A HREF="#CODE:0136">CODE:0136</A>
+INTMEM:INTMEM:21                db          ??                                      
+<A NAME="INTMEM:22"></A>                            k:                            ;XREF[3,0]:   <A HREF="#CODE:00f8">CODE:00f8</A>,<A HREF="#CODE:0113">CODE:0113</A>,<A HREF="#CODE:0115">CODE:0115</A>
+INTMEM:INTMEM:22                db          ??                                      
+<A NAME="INTMEM:23"></A>                            t1:                           
+INTMEM:INTMEM:23                db          ??                                      
+<A NAME="INTMEM:24"></A>INTMEM:INTMEM:24                ??          ??                                      
+<A NAME="INTMEM:25"></A>INTMEM:INTMEM:25                ??          ??                                      
+<A NAME="INTMEM:26"></A>INTMEM:INTMEM:26                ??          ??                                      
+<A NAME="INTMEM:27"></A>INTMEM:INTMEM:27                ??          ??                                      
+<A NAME="INTMEM:28"></A>INTMEM:INTMEM:28                ??          ??                                      
+<A NAME="INTMEM:29"></A>INTMEM:INTMEM:29                ??          ??                                      
+<A NAME="INTMEM:2a"></A>INTMEM:INTMEM:2a                ??          ??                                      
+<A NAME="INTMEM:2b"></A>INTMEM:INTMEM:2b                ??          ??                                      
+<A NAME="INTMEM:2c"></A>INTMEM:INTMEM:2c                ??          ??                                      
+<A NAME="INTMEM:2d"></A>INTMEM:INTMEM:2d                ??          ??                                      
+<A NAME="INTMEM:2e"></A>INTMEM:INTMEM:2e                ??          ??                                      
+<A NAME="INTMEM:2f"></A>INTMEM:INTMEM:2f                ??          ??                                      
+<A NAME="INTMEM:30"></A>INTMEM:INTMEM:30                ??          ??                                      
+<A NAME="INTMEM:31"></A>INTMEM:INTMEM:31                ??          ??                                      
+<A NAME="INTMEM:32"></A>INTMEM:INTMEM:32                ??          ??                                      
+<A NAME="INTMEM:33"></A>INTMEM:INTMEM:33                ??          ??                                      
+<A NAME="INTMEM:34"></A>INTMEM:INTMEM:34                ??          ??                                      
+<A NAME="INTMEM:35"></A>INTMEM:INTMEM:35                ??          ??                                      
+<A NAME="INTMEM:36"></A>INTMEM:INTMEM:36                ??          ??                                      
+<A NAME="INTMEM:37"></A>INTMEM:INTMEM:37                ??          ??                                      
+<A NAME="INTMEM:38"></A>INTMEM:INTMEM:38                ??          ??                                      
+<A NAME="INTMEM:39"></A>INTMEM:INTMEM:39                ??          ??                                      
+<A NAME="INTMEM:3a"></A>INTMEM:INTMEM:3a                ??          ??                                      
+<A NAME="INTMEM:3b"></A>INTMEM:INTMEM:3b                ??          ??                                      
+<A NAME="INTMEM:3c"></A>                            mreg_map:                     ;XREF[3,6]:   <A HREF="#CODE:0324">CODE:0324</A>,<A HREF="#CODE:0345">CODE:0345</A>,<A HREF="#CODE:035c">CODE:035c</A>,<A HREF="#CODE:030e">CODE:030e</A>
+                                                          ;             <A HREF="#CODE:032d">CODE:032d</A>,<A HREF="#CODE:0336">CODE:0336</A>,<A HREF="#CODE:033f">CODE:033f</A>,<A HREF="#CODE:035e">CODE:035e</A>
+                                                          ;             <A HREF="#CODE:0365">CODE:0365</A>
+INTMEM:INTMEM:3c                db[4]       ??                                      
+<A NAME="INTMEM:3c"></A>   |_INTMEM:INTMEM:3c[0]             db          ??                                      
+<A NAME="INTMEM:3d"></A>   |_INTMEM:INTMEM:3d[1]             db          ??                                      
+<A NAME="INTMEM:3e"></A>   |_INTMEM:INTMEM:3e[2]             db          ??                                      
+<A NAME="INTMEM:3f"></A>   |_INTMEM:INTMEM:3f[3]             db          ??                                      
+<A NAME="PORT:00"></A>                            BUS:                          
+PORT:PORT:00                    ??          ??                                      
+<A NAME="PORT:01"></A>                            DAT_PORT_01:                  ;XREF[23,0]:  <A HREF="#CODE:005b">CODE:005b</A>,<A HREF="#CODE:005c">CODE:005c</A>,<A HREF="#CODE:005f">CODE:005f</A>,<A HREF="#CODE:006d">CODE:006d</A>
+                                                          ;             <A HREF="#CODE:0079">CODE:0079</A>,<A HREF="#CODE:0081">CODE:0081</A>,<A HREF="#CODE:0090">CODE:0090</A>,<A HREF="#CODE:013d">CODE:013d</A>
+                                                          ;             <A HREF="#CODE:0141">CODE:0141</A>,<A HREF="#CODE:0152">CODE:0152</A>,<A HREF="#CODE:0157">CODE:0157</A>,<A HREF="#CODE:015d">CODE:015d</A>
+                                                          ;             <A HREF="#CODE:0161">CODE:0161</A>,<A HREF="#CODE:0162">CODE:0162</A>,<A HREF="#CODE:0174">CODE:0174</A>,<A HREF="#CODE:0175">CODE:0175</A>
+                                                          ;             <A HREF="#CODE:017a">CODE:017a</A>,<A HREF="#CODE:01b3">CODE:01b3</A>,<A HREF="#CODE:0204">CODE:0204</A>,<A HREF="#CODE:022d">CODE:022d</A>
+                                                          ;             <A HREF="#CODE:0237">CODE:0237</A>,<A HREF="#CODE:0243">CODE:0243</A>,<A HREF="#CODE:03d0">CODE:03d0</A>
+PORT:PORT:01                    undefined1  ??                                      
+<A NAME="PORT:02"></A>                            P2:                           
+PORT:PORT:02                    ??          ??                                      
+<A NAME="PORT:03"></A>PORT:PORT:03                    ??          ??                                      
+<A NAME="PORT:04"></A>                            P4:                           
+PORT:PORT:04                    ??          ??                                      
+<A NAME="PORT:05"></A>                            P5:                           
+PORT:PORT:05                    ??          ??                                      
+<A NAME="PORT:06"></A>                            P6:                           
+PORT:PORT:06                    ??          ??                                      
+<A NAME="PORT:07"></A>                            P7:                           
+PORT:PORT:07                    ??          ??                                      
+</PRE></STRONG></FONT></BODY></HTML>
