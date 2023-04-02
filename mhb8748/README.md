@@ -2,12 +2,13 @@
 
 ## Index
 
-- [MHB8748.html](MHB8748.html) - Ghidra HTML export of documented firmware
+- [MHB8748.html](code/MHB8748.html) - Ghidra HTML export of documented firmware
   assembly.
-- [MHB8748.bin.gzf](MHB8748.bin.gzf) - Ghidra Zip File (imported in Ghidra looks
+- [MHB8748.bin.gzf](code/MHB8748.bin.gzf) - Ghidra Zip File (imported in Ghidra looks
   way better than HTML).
 - [hardware.md](hardware.md) - description of hardware surrounding MHB8748 chip.
-
+- [protocol.md](protocol.md) - serial protocol description
+  
 ## Role
 
 In Metra M1T380, MHB8748 is used to control analog circuitry, which is basically
