@@ -96,7 +96,7 @@ Command byte:
 - **fil** - 1 to enable filter, 0 to disable filter
 - **mode** - index of a mode
 
-For documentation on each mode, see [Modes](#modes).
+For documentation on each mode, see [Modes](modes.md).
 
 ### run_meas
 
@@ -143,10 +143,6 @@ Command byte:
   - Other values - same as *7*
 
 Each test has its own program, see [Tests](#tests).
-
-## Modes
-
-**TBD**
 
 ## Tests
 
