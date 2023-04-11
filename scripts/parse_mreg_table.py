@@ -6,6 +6,9 @@ from abc import abstractmethod
 from typing import Mapping, Sequence, Union
 
 
+REPO = os.path.normpath(os.path.dirname(__file__) + '/..')
+FW = REPO + '/files/fw/8748/M1T380_i8748/MHB8748.bin'
+
 SIG_NAMES = tuple(f'A{i}' for i in range(3)) + tuple(f'S{i}' for i in range(1, 30))
 
 
@@ -274,10 +277,6 @@ class Mode:
             l.append('```')
             l.append('')
         return l
-
-
-REPO = os.path.normpath(os.path.dirname(__file__) + '/../..')
-FW = REPO + '/fw/8748/M1T380_i8748/MHB8748.bin'
 
 
 with open(FW, 'rb') as f:

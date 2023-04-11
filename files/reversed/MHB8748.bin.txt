@@ -1,0 +1,2058 @@
+                            ;************************************************************************************************
+                            ;*          Metra M1T380 multimeter                                                             *
+                            ;*      MHB8748 ADC controller firmware                                                         *
+                            ;*                                                                                              *
+                            ;*          --- COPYRIGHT NOTICE ---                                                            *
+                            ;*                                                                                              *
+                            ;*        Extracted and documented by                                                           *
+                            ;*        Roman Dobrodii in 2022-2023                                                           *
+                            ;*                                                                                              *
+                            ;*  You should be aware of the fact that                                                        *
+                            ;*  although it looks and probably is an                                                        *
+                            ;*  abandonware, Metra may still hold some                                                      *
+                            ;*  or all rights to the original FW.                                                           *
+                            ;*                                                                                              *
+                            ;*  All my personal contributions to this                                                       *
+                            ;*  can be used under Beerware terms to the                                                     *
+                            ;*  extent permitted by the applicable law:                                                     *
+                            ;*  - As long as you retain this notice you                                                     *
+                            ;*  can do whatever you want with this                                                          *
+                            ;*  stuff.                                                                                      *
+                            ;*  - If we meet some day, and you think                                                        *
+                            ;*  this  stuff is worth it, you can buy me                                                     *
+                            ;*  a beer in return.                                                                           *
+                            ;*                                                                                              *
+                            ;************************************************************************************************
+                            ;void RESET(void)
+                            ;############################################
+                            ;
+                            ;  ---- Some intro on MCS-48 counting ----
+                            ;
+                            ;What is counting? It is when we have a
+                            ;sequence r[i] defined like:
+                            ;   r[0] = init_val
+                            ;   r[1] = OP(r[0])
+                            ;   r[2] = OP(r[1])
+                            ;   ...
+                            ;   r[n+1] = OP(r[n])
+                            ;   ...
+                            ;
+                            ;And then by looking at any value `r[k]`
+                            ;we can calcualte number `k` - which equals
+                            ;to the number of times counter value has
+                            ;been updated by OP.
+                            ;
+                            ;Many counters in this code are 16-bit and
+                            ;are implemented using "DJNZ-DEC combo":
+                            ;  # Initialization
+                            ;   x = 255
+                            ;   y = 255
+                            ;  # Count one
+                            ;   DJNZ y, lbl1
+                            ;   DEC x
+                            ; lbl1:
+                            ;  # Count two
+                            ;   DJNZ y, lbl2
+                            ;   DEC x
+                            ; lbl2:
+                            ;  # Count three
+                            ;   DJNZ y, lbl3
+                            ;   DEC x
+                            ; lbl3:
+                            ;   ...
+                            ;
+                            ;(Don't ask me why is it like that,
+                            ;probably due to space & time constraints,
+                            ;yes, MCS-48 is cursed, are you surprised?).
+                            ;
+                            ;So our r[i] is a pair of 8-bit register
+                            ;values: {x[i], y[i]}, our initialization
+                            ;is {x[0], y[0]} = {255, 255}, and our
+                            ;step `{x[n+1], y[n+1]} = OP({x[n], y[n]})`
+                            ;is defined via DJNZ-DEC:
+                            ;   OP:
+                            ;      DJNZ y, lbl
+                            ;      DEC x
+                            ;     lbl:
+                            ;
+                            ;So if we know the pair `{x[k], y[k]}`, how
+                            ;do we calcualte `k`?
+                            ;It is easy to show that if our OP was
+                            ;implemented via 16-bit subtraction e.g.
+                            ;`{x[n+1], y[n+1]} = {x[n], y[n]} - 16'b1`,
+                            ;then the formula would be
+                            ;`k = 256 * (~x) + (~y)`
+                            ;
+                            ;However, DJNZ-DEC counter is flawed and its
+                            ;sequence differs from a normal 16-bit
+                            ;downcounter:
+                            ; x   y
+                            ;255 255
+                            ;255 254 - correct
+                            ;...     - all correct
+                            ;255 1   - correct
+                            ;254 0   - NOT correct (should be 255 0)
+                            ;254 255 - correct
+                            ;254 254 - correct
+                            ;...     - all correct
+                            ;254 1   - correct
+                            ;253 0   - NOT correct (should be 254 0)
+                            ;253 255 - correct
+                            ;...
+                            ;
+                            ;However, those incorrect values are easy
+                            ;to fix: since a value is incorrect iff y==0,
+                            ;we will increment x by 1 in those points and
+                            ;it will fix the sequence.
+                            ;
+                            ;Number of counts for 0xFFFF-initialized
+                            ;DJNZ-DEC downcounter is defined by CNT1
+                            ;function:
+                            ;  def CNT1(x, y):
+                            ;      if y == 0:
+                            ;          x = (x + 1) & 0xFF  # 8-bit add
+                            ;      x = ~x
+                            ;      y = ~y
+                            ;      return 256*x + y
+                            ;
+                            ;CNT2(x,y) is same as CNT1 but without
+                            ;fixup. Counters in T3 phase simply skip
+                            ;invalid sequence values (since they always
+                            ;count twice around that point), so there is
+                            ;no need to fix anything:
+                            ;  def CNT2(x, y):
+                            ;      x = ~x
+                            ;      y = ~y
+                            ;      return 256*x + y
+                            ;      
+                            ;
+                            ;CNT3(x,y) is for a version of DJNZ-DEC
+                            ;downcounter {x, y} that is initialized to
+                            ;a special value {255, 0}. It is used to
+                            ;count T_T1 value in T1 phase:
+                            ;  def CNT3(x, y):
+                            ;      x = ~x
+                            ;      y = ~y
+                            ;      y = (y + 1) & 0xFF  # 8-bit add
+                            ;      return 256*x + y
+                            ;  
+                            ;CNT0(x) expresses number of counts for an
+                            ;8-bit downcounter (used in T2 phase) that
+                            ;is initialized to 0xFF, no surprises here:
+                            ;  def CNT0(x):
+                            ;      return ~x
+                            ;
+                            ;############################################
+                                                          ;XREF[1,0]:   Entry Point
+CODE:CODE:0000  99fa            ANL         P1,#0xfa                                ;DATA_OUT=1
+                                                                                    ;RDY_OUT=1
+                            OFF_CODE_0002:                ;XREF[0,1]:   Entry Point
+CODE:CODE:0002  9a40            ANL         P2,#0x40                                
+CODE:CODE:0004  8a20            ORL         P2,#0x20                                ;Enable Snul (integrator is zeroed)
+                                                                                    ;All other S* disabled
+                            OFF_CODE_0006:                ;XREF[0,1]:   Entry Point
+CODE:CODE:0006  2303            MOV         A,#0x3                                  
+CODE:CODE:0008  54fe            CALL        set_mode                                ;Set:
+                                                                                    ;  mode=3 (VDC range 150V)
+                                                                                    ;  fil=0
+CODE:CODE:000a  bb05            MOV         R3,#0x5                                 
+CODE:CODE:000c  54f4            CALL        delay_ms                                ;5 ms delay
+                            ;#################################
+                            ;
+                            ;##     ##    ###    #### ##    ## 
+                            ;###   ###   ## ##    ##  ###   ## 
+                            ;#### ####  ##   ##   ##  ####  ## 
+                            ;## ### ## ##     ##  ##  ## ## ## 
+                            ;##     ## #########  ##  ##  #### 
+                            ;##     ## ##     ##  ##  ##   ### 
+                            ;##     ## ##     ## #### ##    ## 
+                            ;
+                            ;#################################
+                            ;
+                            ;Main loop
+                            ;---------
+                            main_loop:                    ;XREF[5,0]:   CODE:0015,CODE:0055,CODE:01bf,CODE:02b7
+                                                          ;             CODE:03d5
+CODE:CODE:000e  542d            CALL        comm_recv_1byte                         ;void comm_recv_1byte(void)
+CODE:CODE:0010  a8              MOV         R0,A                                    ;R0=A=cmd
+CODE:CODE:0011  f217            JB0x7       cmd7_is_high                            
+                            ;------
+                            ;A=cmd={0, X, fil, mode[4:0]}
+                            ;
+                            ;It's a "set mode" command, we
+                            ;configure MREG according to specified
+                            ;`mode` and `fil` arguments
+                            ;------
+                            cmd_set_mode:                 
+CODE:CODE:0013  54fe            CALL        set_mode                                ;void set_mode(void)
+CODE:CODE:0015  040e            JMP         main_loop                               
+                            cmd7_is_high:                 ;XREF[1,0]:   CODE:0011
+CODE:CODE:0017  5378            ANL         A,#0x78                                 
+CODE:CODE:0019  963d            JNZ         cmd_run_test                            
+                            ;
+                            ;########################################
+                            ;
+                            ;cmd={1'b1, 4'b0000, dur[2:0]}
+                            ;
+                            ;It's a command telling us to perform a
+                            ;single ADC measurement.
+                            ;
+                            ;dur[2:0] sets duration of T1 integration
+                            ;phase used for measurement:
+                            ; 3'bXX1 - 1 SINE period
+                            ; 3'bX10 - 10 SINE periods
+                            ; 3'bX00 - 100 SINE periods  
+                            ;
+                            ;########################################
+                            ;
+                            ;Set all regs except R0,R1,R6
+                            ;to 0b1111.1111
+                            ;----
+                            cmd_run_meas:                 
+CODE:CODE:001b  27              CLR         A                                       
+CODE:CODE:001c  37              CPL         A                                       
+CODE:CODE:001d  d5              SEL         RB1                                     
+CODE:CODE:001e  a8              MOV         R0,A                                    
+CODE:CODE:001f  a9              MOV         R1,A                                    
+CODE:CODE:0020  aa              MOV         R2,A                                    
+CODE:CODE:0021  ab              MOV         R3,A                                    
+CODE:CODE:0022  ac              MOV         R4,A                                    
+CODE:CODE:0023  ad              MOV         R5,A                                    
+CODE:CODE:0024  ae              MOV         R6,A                                    
+CODE:CODE:0025  af              MOV         R7,A                                    
+CODE:CODE:0026  c5              SEL         RB0                                     
+CODE:CODE:0027  aa              MOV         R2,A                                    
+CODE:CODE:0028  ab              MOV         R3,A                                    
+CODE:CODE:0029  ac              MOV         R4,A                                    
+CODE:CODE:002a  ad              MOV         R5,A                                    
+CODE:CODE:002b  af              MOV         R7,A                                    
+                            ;----
+                            ;
+CODE:CODE:002c  b920            MOV         R1,#0x20                                
+CODE:CODE:002e  b100            MOV         @R1=>INTMEM:b_long_T1,#0x0              ;*0x20=b_long_T1=0
+                            ;---
+CODE:CODE:0030  f8              MOV         A,R0                                    ;A=cmd
+CODE:CODE:0031  67              RRC         A                                       
+CODE:CODE:0032  f63f            JC          run_meas_1per                           ;dur==3'bXX1 -> T1 = 2 half periods
+CODE:CODE:0034  67              RRC         A                                       
+CODE:CODE:0035  f657            JC          run_meas_20per                          ;dur==3'bX10 -> T1 = 20 half periods
+                            run_meas_200per:              
+CODE:CODE:0037  b101            MOV         @R1=>INTMEM:b_long_T1,#0x1              ;b_long_T1=1
+CODE:CODE:0039  b9c8            MOV         R1,#0xc8                                ;dur==3'bX00 -> T1 = 200 half periods
+                            ;Here r1=200
+CODE:CODE:003b  0441            JMP         run_meas_ll                             
+                            ;
+                            ;#########################################
+                            ;
+                            ;cmd={1'b1, arg[3:0], 3'bXXX}
+                            ;A={1'b0, arg[3:0], 3'b0}
+                            ; where arg != 0
+                            ;
+                            ;It's a command telling us to run a test
+                            ;program.
+                            ;-----
+                            cmd_run_test:                 ;XREF[1,0]:   CODE:0019
+CODE:CODE:003d  4493            JMP         run_test                                ;void run_test(void)
+                            run_meas_1per:                ;XREF[1,0]:   CODE:0032
+CODE:CODE:003f  b902            MOV         R1,#0x2                                 
+                            ;------
+                            ;
+                            ;R1 can be 2,20 or 200 here
+                            ;It determines duration of integration
+                            ;in SINE (mains frequency) half-periods
+                            ;
+                            run_meas_ll:                  ;XREF[2,0]:   CODE:003b,CODE:0059
+CODE:CODE:0041  343c            CALL        integrate                               ;void integrate(void)
+                            ;
+                            ;{R5,R4,R3,R2} contains value
+                            ; 256*(T_Sn- - T_Sn+) + (T_Sn1- - T_Sn1+)
+                            ;expressed in 4-cycle units.
+                            ;
+                            ;Negative numbers are represented using
+                            ;2's complement system.
+                            ;
+                            ;We send {R4,R3,R2} to the host in
+                            ;little-endian order. R5 is simply
+                            ;discarded.
+                            ;
+CODE:CODE:0043  fa              MOV         A,R2                                    
+CODE:CODE:0044  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+CODE:CODE:0046  fb              MOV         A,R3                                    
+CODE:CODE:0047  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+CODE:CODE:0049  fc              MOV         A,R4                                    
+CODE:CODE:004a  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+                            ;
+                            ;Compute {x,y} = CNT3(R7,R6) and send
+                            ;it to the host in little-endian order.
+                            ;
+                            ;To get T_T1 from this, expressed in
+                            ;4-cycle units (same as T_Sn,T_Sn1
+                            ;value above), host CPU should compute
+                            ;the following:
+                            ; 
+                            ;T_T1 = 8 * {x,y} = 8 * CNT3(R7,R6)
+                            ;
+CODE:CODE:004c  fe              MOV         A,R6                                    
+CODE:CODE:004d  37              CPL         A                                       
+CODE:CODE:004e  17              INC         A                                       ;send (~R6)+1
+CODE:CODE:004f  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+CODE:CODE:0051  ff              MOV         A,R7                                    
+CODE:CODE:0052  37              CPL         A                                       ;send ~R7
+CODE:CODE:0053  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+                            ;
+                            ;Measurement completed
+                            ;-> wait for next command
+CODE:CODE:0055  040e            JMP         main_loop                               
+                            ;-------
+                            ;
+                            run_meas_20per:               ;XREF[1,0]:   CODE:0035
+CODE:CODE:0057  b914            MOV         R1,#0x14                                
+CODE:CODE:0059  0441            JMP         run_meas_ll                             
+                            ;
+                            ;
+                            ;#######################################
+                            ;
+                            ;
+                            ;continuation of integrate()
+                            ;---------------------------
+                            T1_completed.0:               ;XREF[1,0]:   CODE:01b6
+CODE:CODE:005b  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:005c  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+                            T1_completed.1:               ;XREF[1,0]:   CODE:01ae
+CODE:CODE:005d  00              NOP                                                  
+                            T1_completed.2:               ;XREF[2,0]:   CODE:01a7,CODE:01ac
+CODE:CODE:005e  00              NOP                                                  
+CODE:CODE:005f  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:0060  9a40            ANL         P2,#0x40                                
+                            ;-------
+                            ;P2=0b0X00.0000
+                            ;Sx, Sn+, Sn- and other switches
+                            ;are disabled from now on.
+                            ;T1 phase is finished, move on to T2 and T3.
+                            ;
+                            ;
+                            ;
+                            ;T2 and T3 stages use RB1 register bank.
+                            ;-------
+CODE:CODE:0062  d5              SEL         RB1                                     
+                            ;
+                            ;Vint within K2 range ?
+                            ;No need for T2 phase, jump directly to T3
+                            ;----
+CODE:CODE:0063  267d            JNT0        T3_begin                                
+                            ;#######################################
+                            ;
+                            ;########  #######  
+                            ;   ##    ##     ## 
+                            ;   ##           ## 
+                            ;   ##     #######  
+                            ;   ##    ##        
+                            ;   ##    ##        
+                            ;   ##    ######### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;In T2 phase, Vint is outside of K2 range
+                            ;Integrator is discarged to bring Vint
+                            ;into K2 range by enabling Sn+ or Sn-
+                            ;switch, depending on sign of Vint
+                            ;
+                            ;Measurement results:
+                            ; T_T2_Sn- = 4cyc * CNT0(R4')
+                            ; T_T2_Sn+ = 4cyc * CNT0(R2')
+                            ;-----
+                            T2_begin:                     
+CODE:CODE:0065  4673            JNT1        T2_vint_positive                        
+                            T2_vint_negative:             
+CODE:CODE:0067  8a08            ORL         P2,#0x8                                 ;T=2c
+                                                                                    ;Activate Sn-
+                            ;This loop waits while Vint is negative and
+                            ;outside of K2 range. Sn- switch is enabled,
+                            ;negative calibrated current flows into
+                            ;integrator, increasing Vint towards 0V.
+                            ;
+                            ;Time that Sn- is enabled is counted and it
+                            ;is part of the measurement result.
+                            ;----
+                            T2_vint_negative_loop:        ;XREF[1,0]:   CODE:006b
+CODE:CODE:0069  00              NOP                                                  ;T=1c
+CODE:CODE:006a  cc              DEC         R4                                      ;T=1c
+                                                                                    ;R4' -= 1
+CODE:CODE:006b  3669            JT0         T2_vint_negative_loop                   ;T=2c
+CODE:CODE:006d  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+CODE:CODE:006e  9a40            ANL         P2,#0x40                                ;Disable all S* switches
+CODE:CODE:0070  cc              DEC         R4                                      ;R4' -= 1
+CODE:CODE:0071  047d            JMP         T3_begin                                
+                            T2_vint_positive:             ;XREF[1,0]:   CODE:0065
+CODE:CODE:0073  8a02            ORL         P2,#0x2                                 ;Activate Sn+
+                            ;This loop waits while Vint is positive and
+                            ;outside of K2 range. Sn+ switch is enabled,
+                            ;positive calibrated current flows into
+                            ;integrator, decreasing Vint towards 0V.
+                            ;
+                            ;Time that Sn+ is enabled is counted and it
+                            ;is part of the measurement result.
+                            ;----
+                            T2_vint_positive_loop:        ;XREF[1,0]:   CODE:0077
+CODE:CODE:0075  00              NOP                                                  
+CODE:CODE:0076  ca              DEC         R2                                      ;R2' -= 1
+CODE:CODE:0077  3675            JT0         T2_vint_positive_loop                   
+CODE:CODE:0079  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:007a  9a40            ANL         P2,#0x40                                ;Disable all S* switches
+CODE:CODE:007c  ca              DEC         R2                                      ;R2' -= 1
+                            ;#######################################
+                            ;
+                            ;########  #######  
+                            ;   ##    ##     ## 
+                            ;   ##           ## 
+                            ;   ##     #######  
+                            ;   ##           ## 
+                            ;   ##    ##     ## 
+                            ;   ##     ####### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;In T3 phase, integrator is discharged to
+                            ;0V with small calibrated current via Sn1+
+                            ;or Sn1- switch (depending on Vint sign).
+                            ;We measure the time that the switch was
+                            ;enabled till Vint reaches 0V.
+                            ;
+                            ;Measurement results:
+                            ; T_T3_Sn1- = 6cyc + 4cyc*CNT2(R1',R0')
+                            ; T_T3_Sn1+ = 6cyc + 4cyc*CNT2(R7',R6')
+                            ;-----
+                            T3_begin:                     ;XREF[2,0]:   CODE:0063,CODE:0071
+CODE:CODE:007d  468e            JNT1        T3_vint_positive_loop                   
+                            ;This loop waits while Vint is negative and
+                            ;till it crosses 0V (till K0 is triggered).
+                            ;Sn1- switch is enabled, small negative
+                            ;calibrated current flows into integrator,
+                            ;increasing Vint towards 0V.
+                            ;
+                            ;Time that Sn1- is enabled is counted and it
+                            ;is part of the measurement result.
+                            ;----
+                            T3_vint_negative_loop:        ;XREF[1,0]:   CODE:008c
+CODE:CODE:007f  8a10            ORL         P2,#0x10                                ;T=2c Activate Sn1-
+CODE:CODE:0081  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+                            ;{R1',R0'} counts 4cyc (10us) mini-loops
+                            T3_vint_negative_loop.1:      ;XREF[1,0]:   CODE:0084
+CODE:CODE:0082  469d            JNT1        T3_completed                            ;T=2c
+CODE:CODE:0084  e882            DJNZ        R0,T3_vint_negative_loop.1              ;T=2c
+CODE:CODE:0086  9a40            ANL         P2,#0x40                                ;Deactivate Sn1-
+CODE:CODE:0088  469d            JNT1        T3_completed                            
+CODE:CODE:008a  c9              DEC         R1                                      
+                            ;When iterating in big loop, account for T
+                            ;spent between T3_vint_negative_loop and
+                            ;T3_vint_negative_loop.1 (4cyc == 1 miniloop)
+                            ;by counting one extra miniloop
+                            ;---
+CODE:CODE:008b  c8              DEC         R0                                      
+CODE:CODE:008c  047f            JMP         T3_vint_negative_loop                   
+                            ;This loop waits while Vint is positive and
+                            ;till it crosses 0V (till K0 is triggered).
+                            ;Sn1+ switch is enabled, small positive
+                            ;calibrated current flows into integrator,
+                            ;decreasing Vint towards 0V.
+                            ;
+                            ;Time that Sn1+ is enabled is counted and it
+                            ;is part of the measurement result.
+                            ;----
+                            T3_vint_positive_loop:        ;XREF[2,0]:   CODE:007d,CODE:009b
+CODE:CODE:008e  8a04            ORL         P2,#0x4                                 ;Activate Sn1+
+CODE:CODE:0090  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+                            T3_vint_positive_loop.1:      ;XREF[1,0]:   CODE:0093
+CODE:CODE:0091  569d            JT1         T3_completed                            
+CODE:CODE:0093  ee91            DJNZ        R6,T3_vint_positive_loop.1              
+CODE:CODE:0095  9a40            ANL         P2,#0x40                                
+CODE:CODE:0097  569d            JT1         T3_completed                            
+CODE:CODE:0099  cf              DEC         R7                                      
+CODE:CODE:009a  ce              DEC         R6                                      
+CODE:CODE:009b  048e            JMP         T3_vint_positive_loop                   
+                            T3_completed:                 ;XREF[4,0]:   CODE:0082,CODE:0088,CODE:0091,CODE:0097
+CODE:CODE:009d  9a40            ANL         P2,#0x40                                ;Disable all S*
+CODE:CODE:009f  8a20            ORL         P2,#0x20                                ;Enable Snul
+                            ;-------
+                            ;Integration has been completed.
+                            ;Snul is enabled, other S* disabled.
+                            ;Integrator is zeroed and remains like
+                            ;that till next measurement.
+                            ;
+                            ;
+                            ;
+                            ;
+                            ;#######################################
+                            ;
+                            ;########   #######   ######  ######## 
+                            ;##     ## ##     ## ##    ##    ##    
+                            ;##     ## ##     ## ##          ##    
+                            ;########  ##     ##  ######     ##    
+                            ;##        ##     ##       ##    ##    
+                            ;##        ##     ## ##    ##    ##    
+                            ;##         #######   ######     ##    
+                            ;
+                            ;#######################################
+                            ;
+                            ;Result postprocessing.
+                            ;Measurements from all stages are located in:
+                            ; R2  R3  R4  R5  R6  R7
+                            ; R0' R1' R2' R4' R6' R7'
+                            ;
+                            ; T_T1 = 32cyc * CNT3(R7,R6)
+                            ; T_T1_Sn- = 32cyc * CNT1(R5,R4)
+                            ; T_T1_Sn+ = 32cyc * CNT1(R3,R2)
+                            ; T_T2_Sn- = 4cyc * CNT0(R4')
+                            ; T_T2_Sn+ = 4cyc * CNT0(R2')
+                            ; T_T3_Sn1- = 6cyc + 4cyc * CNT2(R1',R0')
+                            ; T_T3_Sn1+ = 6cyc + 4cyc * CNT2(R7',R6')
+                            ;
+                            ;There are some extra values:
+                            ; b_long_T1 = *0x20:
+                            ;   - 1 if integrating for 100 SINE periods
+                            ;   - 0 if integrating for 1 or 10 periods
+                            ;
+                            ;---
+                            ;
+                            ;Remember that the principle of the
+                            ;integrating ADC is that we want to measure
+                            ;the total charge Qcal injected into the
+                            ;integrator by calibrated current sources
+                            ;through switched Sn+, Sn-, Sn1+, Sn1-.
+                            ;The charge is proportional to the value of
+                            ;the current and time during which respective
+                            ;switch was closed:
+                            ;  Qcal = I(Sn+) * T_Sn+ + I(Sn-) + T_Sn- +
+                            ;        I(Sn1+) * T_Sn1+ + I(Sn1-) * T_Sn1-
+                            ;
+                            ;Charge Qcal balances out charge Qx injected
+                            ;by current Ix:
+                            ;  Qcal = -Qx
+                            ;
+                            ;Qx is proportional to the input voltage
+                            ;and duration during which Sx switch
+                            ;was closed:
+                            ;  Qx = Ix * T_Sx = k * Vx * T_Sx
+                            ;
+                            ;We can easily calculate input voltage Vx:
+                            ;  Vx = -Qcal / k / T_Sx
+                            ;
+                            ;So if we want to know the charge Qcal:
+                            ;  Qcal = I(Sn+) * T_Sn+ + I(Sn-) + T_Sn- +
+                            ;        I(Sn1+) * T_Sn1+ + I(Sn1-) * T_Sn1-
+                            ;and we make our analog circuit so that:
+                            ;  I(Sn1+) = -I(Sn1-) = Ic
+                            ;  I(Sn+) = -I(Sn-) = Ic * 256
+                            ;the calculation is simplified:
+                            ;  Qcal = (256 * T_Sn+ - 256 * T_Sn-
+                            ;          + T_sn1+ - T_sn1-) * Ic
+                            ;
+                            ;And Vx calculation becomes:
+                            ;  Vx = (Ic / k) *
+                            ;       ( 256 * T_Sn- + T_Sn1-
+                            ;        -256 * T_Sn+ - T_Sn1+)
+                            ;
+                            ;------
+                            ;
+                            ;Since this code does a lot of register
+                            ;moves, let's assign some fixed designations
+                            ;to the original measured values.
+                            ;
+                            ;For Sn+, Sn1+ switch timings:
+                            ; T_T1_Sn+ = 32cyc * CNT1(px,py)
+                            ; T_T2_Sn+ = 4cyc * CNT0(pz)
+                            ; T_T3_Sn1+ = 6cyc + 4cyc * CNT2(pm,pl)
+                            ;Initially:
+                            ; px=R3, py=R2, pz=R2', pm=R7', pl=R6'
+                            ;
+                            ;For Sn-, Sn1- switch timings:
+                            ; T_T1_Sn- = 32cyc * CNT1(nx,ny)
+                            ; T_T2_Sn- = 4cyc * CNT0(nz)
+                            ; T_T3_Sn1- = 6cyc + 4cyc * CNT2(nm,nl)
+                            ;Initially:
+                            ; nx=R5, ny=R4, nz=R4', nm=R1', nl=R0'
+                            ;
+                            ;-----
+                            postprocess_results:          
+CODE:CODE:00a1  99f7            ANL         P1,#0xf7                                ;Set P1[3]=0
+                                                                                    ;This pin is unused, so maybe for debug?
+CODE:CODE:00a3  14f5            CALL        covert_and_add_Sn_durations             ;void covert_and_add_Sn_durations(void)
+                            ;-----
+                            ;After call:
+                            ;- BS=RB0 (RET-function, PSW not restored)
+                            ;- R1=0x21=&t0
+                            ;- A = ~pl
+                            ;- {t0, R3, R2} = {pa, pb, pc} = 
+                            ;  8*CNT1(px,py) + CNT0(pz) + ~pm
+CODE:CODE:00a5  a8              MOV         R0,A                                    ;R0=~R6'=~pl
+CODE:CODE:00a6  f1              MOV         A,@R1                                   ;A=t0
+CODE:CODE:00a7  19              INC         R1                                      
+CODE:CODE:00a8  19              INC         R1                                      
+CODE:CODE:00a9  a1              MOV         @R1,A                                   ;*0x23=t1=t0
+CODE:CODE:00aa  fa              MOV         A,R2                                    
+CODE:CODE:00ab  2c              XCH         A,R4                                    
+CODE:CODE:00ac  aa              MOV         R2,A                                    ;R2=ny
+                                                                                    ;R4=pc
+CODE:CODE:00ad  fb              MOV         A,R3                                    
+CODE:CODE:00ae  2d              XCH         A,R5                                    
+CODE:CODE:00af  ab              MOV         R3,A                                    ;R3=nx
+                                                                                    ;R5=pb
+CODE:CODE:00b0  d5              SEL         RB1                                     
+CODE:CODE:00b1  fc              MOV         A,R4                                    
+CODE:CODE:00b2  2a              XCH         A,R2                                    
+CODE:CODE:00b3  ac              MOV         R4,A                                    ;R2'=nz
+                                                                                    ;R4'=pz
+CODE:CODE:00b4  f9              MOV         A,R1                                    
+CODE:CODE:00b5  2f              XCH         A,R7                                    
+CODE:CODE:00b6  a9              MOV         R1,A                                    ;R1'=pm
+                                                                                    ;R7'=nm
+CODE:CODE:00b7  f8              MOV         A,R0                                    
+CODE:CODE:00b8  2e              XCH         A,R6                                    
+CODE:CODE:00b9  a8              MOV         R0,A                                    ;R0'=pl
+                                                                                    ;R6'=nl
+CODE:CODE:00ba  14f5            CALL        covert_and_add_Sn_durations             ;void covert_and_add_Sn_durations(void)
+                            ;-----
+                            ;After call:
+                            ;- BS=RB0 (RET-function, PSW not restored)
+                            ;- R1=0x21=&t0
+                            ;- A = ~nl
+                            ;- {t0, R3, R2} = {na, nb, nc} =
+                            ;  8*CNT1(nx,ny) + CNT0(nz) + ~nm
+CODE:CODE:00bc  28              XCH         A,R0                                    ;R0=~nl
+                                                                                    ;A=~pl
+CODE:CODE:00bd  37              CPL         A                                       ;A=pl
+CODE:CODE:00be  68              ADD         A,R0                                    ;A=pl + ~nl
+CODE:CODE:00bf  2a              XCH         A,R2                                    ;R2=pl + ~nl
+                                                                                    ;A=nc
+CODE:CODE:00c0  2c              XCH         A,R4                                    ;R4=nc
+                                                                                    ;A=pc
+CODE:CODE:00c1  37              CPL         A                                       ;A=~pc
+CODE:CODE:00c2  7c              ADDC        A,R4                                    ;{A,R2}={nc+~pc,pl+~nl}
+CODE:CODE:00c3  2b              XCH         A,R3                                    ;{R3,R2}={nc+~pc,pl+~nl}
+                                                                                    ;A=nb
+CODE:CODE:00c4  2d              XCH         A,R5                                    ;R5=nb
+                                                                                    ;A=pb
+CODE:CODE:00c5  37              CPL         A                                       ;A=~pb
+CODE:CODE:00c6  7d              ADDC        A,R5                                    ;{A,R3,R2}={nb+~pb,nc+~pc,pl+~nl}
+CODE:CODE:00c7  ac              MOV         R4,A                                    ;{R4,R3,R2}={nb+~pb,nc+~pc,pl+~nl}
+CODE:CODE:00c8  19              INC         R1                                      
+CODE:CODE:00c9  19              INC         R1                                      
+CODE:CODE:00ca  f1              MOV         A,@R1                                   ;A=t1=pa
+CODE:CODE:00cb  37              CPL         A                                       ;A=~pa
+CODE:CODE:00cc  c9              DEC         R1                                      
+CODE:CODE:00cd  c9              DEC         R1                                      
+CODE:CODE:00ce  71              ADDC        A,@R1                                   ;{A,R4,R3,R2}=
+                                                                                    ;    {na+~pa,nb+~pb,nc+~pc,pl+~nl}
+CODE:CODE:00cf  ad              MOV         R5,A                                    ;{R5,R4,R3,R2}=
+                                                                                    ;    {na+~pa,nb+~pb,nc+~pc,pl+~nl}
+                            ;`x+~y+1` becomes `x-y`
+                            ;(2's complement: -x=~x+1)
+CODE:CODE:00d0  fa              MOV         A,R2                                    
+CODE:CODE:00d1  0301            ADD         A,#0x1                                  
+CODE:CODE:00d3  aa              MOV         R2,A                                    
+CODE:CODE:00d4  fb              MOV         A,R3                                    
+CODE:CODE:00d5  1300            ADDC        A,#0x0                                  
+CODE:CODE:00d7  ab              MOV         R3,A                                    
+CODE:CODE:00d8  fc              MOV         A,R4                                    
+CODE:CODE:00d9  1300            ADDC        A,#0x0                                  
+CODE:CODE:00db  ac              MOV         R4,A                                    
+CODE:CODE:00dc  fd              MOV         A,R5                                    
+CODE:CODE:00dd  1300            ADDC        A,#0x0                                  
+CODE:CODE:00df  ad              MOV         R5,A                                    
+                            ;-----
+                            ;X = {R5,R4,R3,R2}
+                            ;  = {na-pa,nb-pb,nc-pc,pl-nl}
+                            ;  = 256*8*(CNT1(nx,ny) - CNT1(px,py))
+                            ;    + 256*(CNT0(nz) - CNT0(pz))
+                            ;    + CNT2(nm,nl) - CNT2(pm,pl)
+                            ;
+                            ;Which, taking into account that CNT1 terms
+                            ;count 32-cycle loops, while CNT0 and CNT2
+                            ;count 4-cycle loops, gives us:
+                            ;  X * 4cyc = 
+                            ;      256*( T_T1_Sn- + T_T2_Sn-
+                            ;           -T_T1_Sn+ - T_T2_Sn+)
+                            ;        + ( T_T3_Sn1- - T_T3_Sn1+)
+                            ;  =
+                            ;      256*(T_Sn- - T_Sn+)
+                            ;        + (T_Sn1- - T_Sn1+)
+                            ;
+                            ;Then 
+                            ;Vx = (Ic/k) * X * 4cyc / T_Sx
+                            ;
+                            ;Where T_Sx is calculated outside of this
+                            ;routine.
+                            ;-----
+CODE:CODE:00e0  c9              DEC         R1                                      
+CODE:CODE:00e1  f1              MOV         A,@R1                                   ;A=*0x20=b_long_T1
+                            ;
+                            ;b_long_T1==1 means T1 integration time
+                            ;is long, which leads to large T_Sn times
+                            ;and that makes X value to be large as well.
+                            ;
+                            ;As we want to save 1 byte and transmit only
+                            ;a 24-bit value instead of 32-bit, when
+                            ;b_long_T1 is set, we right-shift the result
+                            ;by 3 so it still fits into 24-bit value.
+                            ;
+                            ;(note: I have not checked if this really
+                            ;works, but that's what the manual mentions).
+CODE:CODE:00e2  c6f4            JZ          return                                  
+CODE:CODE:00e4  b903            MOV         R1,#0x3                                 
+                            rshift_result_by_3_loop:      ;XREF[1,0]:   CODE:00f2
+CODE:CODE:00e6  fd              MOV         A,R5                                    
+CODE:CODE:00e7  67              RRC         A                                       
+CODE:CODE:00e8  ad              MOV         R5,A                                    
+CODE:CODE:00e9  fc              MOV         A,R4                                    
+CODE:CODE:00ea  67              RRC         A                                       
+CODE:CODE:00eb  ac              MOV         R4,A                                    
+CODE:CODE:00ec  fb              MOV         A,R3                                    
+CODE:CODE:00ed  67              RRC         A                                       
+CODE:CODE:00ee  ab              MOV         R3,A                                    
+CODE:CODE:00ef  fa              MOV         A,R2                                    
+CODE:CODE:00f0  67              RRC         A                                       
+CODE:CODE:00f1  aa              MOV         R2,A                                    ;{R5,R4,R3,R2} >>= 1
+CODE:CODE:00f2  e9e6            DJNZ        R1,rshift_result_by_3_loop              
+                            ;Finally, return from integrate()
+                            ;-----
+                            return:                       ;XREF[1,0]:   CODE:00e2
+CODE:CODE:00f4  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void covert_and_add_Sn_durations(void)
+                            ;-IN
+                            ;R2
+                            ;R3
+                            ;
+                                                          ;XREF[2,0]:   CODE:00a3,CODE:00ba
+CODE:CODE:00f5  c5              SEL         RB0                                     
+CODE:CODE:00f6  b922            MOV         R1,#0x22                                
+CODE:CODE:00f8  b103            MOV         @R1=>INTMEM:k,#0x3                      ;k=*0x22=3
+CODE:CODE:00fa  c9              DEC         R1                                      
+CODE:CODE:00fb  b100            MOV         @R1=>INTMEM:t0,#0x0                     ;t0=*0x21=0
+                            ;
+                            ;Calculate
+                            ;R3,R2 = CNT1(R3,R2)
+                            ;
+                            ;See some explanation about CNTx functions
+                            ;above. In short, this is to fix "bugged"
+                            ;counting sequence of DJNZ+DEC downcounter.
+                            ;-----
+CODE:CODE:00fd  fa              MOV         A,R2                                    
+CODE:CODE:00fe  37              CPL         A                                       
+CODE:CODE:00ff  aa              MOV         R2,A                                    ;R2=~R2
+CODE:CODE:0100  17              INC         A                                       
+CODE:CODE:0101  97              CLR         C                                       
+CODE:CODE:0102  9605            JNZ         cnt1_no_fixup                           
+                            cnt1_fixup:                   
+CODE:CODE:0104  a7              CPL         C                                       ;C=1 if original R2==0
+                                                                                    ;
+                            cnt1_no_fixup:                ;XREF[1,0]:   CODE:0102
+CODE:CODE:0105  27              CLR         A                                       
+CODE:CODE:0106  7b              ADDC        A,R3                                    ;C==1 -> apply fixup
+CODE:CODE:0107  37              CPL         A                                       
+CODE:CODE:0108  ab              MOV         R3,A                                    ;R3,R2 = CNT1(R3,R2)
+                            ;-----
+                            ;
+                            loop0:                        ;XREF[1,0]:   CODE:0117
+CODE:CODE:0109  fa              MOV         A,R2                                    
+CODE:CODE:010a  6a              ADD         A,R2                                    
+CODE:CODE:010b  aa              MOV         R2,A                                    
+CODE:CODE:010c  fb              MOV         A,R3                                    
+CODE:CODE:010d  7b              ADDC        A,R3                                    
+CODE:CODE:010e  ab              MOV         R3,A                                    
+CODE:CODE:010f  f1              MOV         A,@R1=>INTMEM:t0                        ;A=t0
+CODE:CODE:0110  71              ADDC        A,@R1=>INTMEM:t0                        ;= ??
+CODE:CODE:0111  a1              MOV         @R1=>INTMEM:t0,A                        ;{t0,R3,R2} += {t0,R3,R2}
+                                                                                    ;-or-
+                                                                                    ;{t0,R3,R2} *= 2
+CODE:CODE:0112  19              INC         R1                                      
+CODE:CODE:0113  f1              MOV         A,@R1=>INTMEM:k                         ;A=k
+CODE:CODE:0114  07              DEC         A                                       
+CODE:CODE:0115  a1              MOV         @R1=>INTMEM:k,A                         ;k -= 1
+CODE:CODE:0116  c9              DEC         R1                                      
+CODE:CODE:0117  9609            JNZ         loop0                                   ;Repeat loop 3 times
+                            ;----
+                            ;Above loop effectively does:
+                            ;{t0,R3,R2} *= 8
+                            ;After the loop R1 = 0x21 = &t0
+                            ;
+                            ;
+                            ;----
+CODE:CODE:0119  d5              SEL         RB1                                     
+CODE:CODE:011a  fa              MOV         A,R2                                    
+CODE:CODE:011b  c5              SEL         RB0                                     
+CODE:CODE:011c  37              CPL         A                                       
+CODE:CODE:011d  6a              ADD         A,R2                                    
+CODE:CODE:011e  aa              MOV         R2,A                                    ;R2+=~R2'
+CODE:CODE:011f  e628            JNC         skip_carry.1                            
+CODE:CODE:0121  1b              INC         R3                                      
+CODE:CODE:0122  fb              MOV         A,R3                                    ;if R2 + ~R2' overflows:
+                                                                                    ;  R3 += 1
+CODE:CODE:0123  9628            JNZ         skip_carry.1                            
+CODE:CODE:0125  f1              MOV         A,@R1=>INTMEM:t0                        ;= ??
+CODE:CODE:0126  17              INC         A                                       
+CODE:CODE:0127  a1              MOV         @R1=>INTMEM:t0,A                        ;if R3+=1 overflows:
+                                                                                    ;  t0 += 1
+                            ;----
+                            ;Above code effectively does:
+                            ;{t0,R3,R2} += {0,0,~R2'}
+                            ;
+                            ;
+                            skip_carry.1:                 ;XREF[2,0]:   CODE:011f,CODE:0123
+CODE:CODE:0128  d5              SEL         RB1                                     
+CODE:CODE:0129  ff              MOV         A,R7                                    
+CODE:CODE:012a  c5              SEL         RB0                                     
+CODE:CODE:012b  37              CPL         A                                       
+CODE:CODE:012c  6a              ADD         A,R2                                    
+CODE:CODE:012d  aa              MOV         R2,A                                    ;R2+=~R7'
+CODE:CODE:012e  e637            JNC         skip_carry.2                            
+CODE:CODE:0130  1b              INC         R3                                      
+CODE:CODE:0131  fb              MOV         A,R3                                    ;if R2+~R7' overflows:
+                                                                                    ;  R3+=1
+CODE:CODE:0132  9637            JNZ         skip_carry.2                            
+CODE:CODE:0134  f1              MOV         A,@R1=>INTMEM:t0                        ;= ??
+CODE:CODE:0135  17              INC         A                                       
+CODE:CODE:0136  a1              MOV         @R1=>INTMEM:t0,A                        ;if R3+=1 overflows:
+                                                                                    ;  t0 += 1
+                            ;----
+                            ;Above code effectively does:
+                            ;{t0,R3,R2} += {0,0,~R7'}
+                            ;
+                            ;
+                            ;At this point,
+                            ;{t0,R3,R2} = 8*CNT1(R3,R2) +
+                            ;             CNT0(R2') + CNT0(R7')
+                            skip_carry.2:                 ;XREF[2,0]:   CODE:012e,CODE:0132
+CODE:CODE:0137  d5              SEL         RB1                                     
+CODE:CODE:0138  fe              MOV         A,R6                                    
+CODE:CODE:0139  c5              SEL         RB0                                     
+CODE:CODE:013a  37              CPL         A                                       ;A=~R6'
+CODE:CODE:013b  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void integrate(void)
+                            ;######################################
+                            ;
+                            ;       ###    ########   ######  
+                            ;      ## ##   ##     ## ##    ## 
+                            ;     ##   ##  ##     ## ##       
+                            ;    ##     ## ##     ## ##       
+                            ;    ######### ##     ## ##       
+                            ;    ##     ## ##     ## ##    ## 
+                            ;    ##     ## ########   ######  
+                            ;
+                            ;#######################################
+                            ;
+                            ;This is without doubt the main function in
+                            ;this firmware. It implements a single
+                            ;conversion of integrating ADC.
+                            ;
+                            ;Arguments:
+                            ; R0 - cmd (unused)
+                            ; R1 - duration of integration, number of
+                            ;      SINE half-periods (2, 20 or 200)
+                            ; *0x20 - set to 1 if R1==200 else 0
+                            ; 
+                            ;Following regs:
+                            ; R2  R3  R4  R5  R7
+                            ; R0' R1' R2' R3' R4' R5' R6' R7'
+                            ; Are all set to 0xFF = 0b1111.1111 
+                            ;
+                            ;These regs are garbage:
+                            ; R6
+                            ;
+                            ;Some notations:
+                            ; Vint - voltage on the output of
+                            ;      integrator (I9)
+                            ; K0 - comparator I12, monitors sign(Vint)
+                            ; K1 - comparator I11, checks if Vint is in
+                            ;      range [-9V,+9V] (approx.)
+                            ; K2 - comparator I13, checks if Vint is in
+                            ;      range [-0.3V,+0.3V] (approx.)
+                            ;
+                            ;Flags:
+                            ; INT=0: Vint within K1 range (JNI jumps)
+                            ; INT=1: Vint out of K1 range
+                            ; -
+                            ; T0=0: Vint within K2 range
+                            ; T0=1: Vint out of K2 range
+                            ; -
+                            ; T1=0: Vint is positive
+                            ; T1=1: Vint is negative 
+                            ;-------
+                                                          ;XREF[1,0]:   CODE:0041
+CODE:CODE:013c  85              CLR         F0                                      
+CODE:CODE:013d  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:013e  f27a            JB0x7       wait_for_sine_negedge                   
+CODE:CODE:0140  95              CPL         F0                                      
+                            ;-----
+                            ;if SINE==1
+                            ;  F0=0
+                            ;  wait_for_sine_negedge
+                            ;else
+                            ;  F0=1
+                            ;  wait_for_sine_posedge
+                            ;-----
+                            wait_for_sine_posedge:        ;XREF[1,0]:   CODE:0143
+CODE:CODE:0141  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:0142  37              CPL         A                                       
+CODE:CODE:0143  f241            JB0x7       wait_for_sine_posedge                   ;while(SINE==0) {}
+CODE:CODE:0145  00              NOP                                                  ;here SINE==1
+                            ;#######################################
+                            ;
+                            ;########    ##   
+                            ;   ##     ####   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##       ##   
+                            ;   ##     ###### 
+                            ;
+                            ;#######################################
+                            ;
+                            ;T1 integration phase.
+                            ;Sx switch is contantly on, so integrator
+                            ;is charged by current proportional to
+                            ;the input voltage. We keep it like that
+                            ;till a given (by R1 value) number of
+                            ;SINE half-periods is elapsed. Then
+                            ;we move on to T2 phase.
+                            ;
+                            ;Here, F1 and C flags contain state of
+                            ;Sn+/- switches, one of which is closed
+                            ;for fixed amount of time when integrator
+                            ;output (Vint) becomes too large. This 
+                            ;injects calibrated amount of charge into
+                            ;integrator, decreasing Vint towards 0.
+                            ;
+                            ;We measure duration of time that Sx and
+                            ;Sn switched are enabled - that is part
+                            ;of final ADC measurement result from
+                            ;which input voltage can be calculated.
+                            ;
+                            ;F0=0 - prev SINE edge was 1->0
+                            ;       next we expect 0->1
+                            ;F0=1 - prev SINE edge was 0->1
+                            ;       next we expect 1->0
+                            ;F0=0 - Sn switches are off
+                            ;F1=1 - Sn+/- switch is switched on
+                            ; C=0 - Sn+ is on (when F1==1)
+                            ; C=1 - Sn- is on (when F1==1)
+                            ;----
+                            ;Measurement results:
+                            ; T_T1 = T_Sx - duration of T1 phase
+                            ;               (time with Sx activated)
+                            ; T_T1_Sn- - time with Sn- activated
+                            ; T_T1_Sn- - time with Sn+ activated
+                            ;
+                            ; T_T1 = 32cyc * CNT3(R7,R6)
+                            ; T_T1_Sn- = 32cyc * CNT1(R5,R4)
+                            ; T_T1_Sn+ = 32cyc * CNT1(R3,R2)
+                            ;----
+                            T1_begin:                     ;XREF[1,0]:   CODE:017d
+CODE:CODE:0146  74f8            CALL        delay_28cyc_70us                        ;void delay_28cyc_70us(void)
+CODE:CODE:0148  a5              CLR         F1                                      ;F1=0
+CODE:CODE:0149  9a40            ANL         P2,#0x40                                
+CODE:CODE:014b  8a01            ORL         P2,#0x1                                 ;Enable Sx
+CODE:CODE:014d  2453            JMP         T1_loop.2                               
+                            ;T1 phase is implemented by this big loop.
+                            ;Duration of each loop iteration is constant,
+                            ;no matter which branches it takes, and it 
+                            ;is equal to 32cyc (80us).
+                            ;----
+                            T1_loop.0.disable_Sn_switches:;XREF[2,0]:   CODE:018d,CODE:0199
+CODE:CODE:014f  a5              CLR         F1                                      
+CODE:CODE:0150  9a41            ANL         P2,#0x41                                ;Disable Sn+/i switches
+                                                                                    ;F1=0
+                            T1_loop.1:                    ;XREF[3,0]:   CODE:0176,CODE:0190,CODE:019c
+CODE:CODE:0152  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+                            T1_loop.2:                    ;XREF[3,0]:   CODE:014d,CODE:016d,CODE:0172
+CODE:CODE:0153  ee78            DJNZ        R6,skip2cyc.2                           ;T=2c
+                            ;jump is used to balance timings
+                            ;it takes 2 cyc, same as DEC+NOP
+CODE:CODE:0155  cf              DEC         R7                                      ;T=1c
+CODE:CODE:0156  00              NOP                                                  ;T=1c
+                            ;------
+                            ;{R7,R6} = DJNZ_DEC({R7,R6})
+                            ;{R7,R6} counts number of loop intervals
+                            ;spent in T1 integration phase
+                            ;
+                            ;
+                            skip2cyc.2_return:            ;XREF[1,0]:   CODE:0178
+CODE:CODE:0157  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c A=P1
+                            ;We check for SINE edge on every loop
+                            ;iteration. Depedning on polarity of
+                            ;previously seen edge (pos or neg),
+                            ;we try to detect an edge of opposite
+                            ;polarity (neg or pos).
+CODE:CODE:0158  b67f            JF0         check_for_sine_negedge                  ;T=2c
+                            check_for_sine_posedge:       
+CODE:CODE:015a  00              NOP                                                  ;T=1c
+CODE:CODE:015b  f2b0            JB0x7       sine_edge_detected                      ;T=2c 
+CODE:CODE:015d  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c 
+                            sine_edge_not_detected:       ;XREF[1,0]:   CODE:0182
+CODE:CODE:015e  00              NOP                                                  ;T=1c
+                            ;If Sn+/- switch is currently activated,
+                            ;we need to:
+                            ;a. measure how long it is enabled
+                            ;b. disable it after fixed amount of time
+                            ;   (Sn are closed only for 16 loop
+                            ;    iterations at a time in T1 phase)
+                            sine_edge_detected_and_is_n...;XREF[1,0]:   CODE:01b1
+CODE:CODE:015f  7684            JF1         handle_active_Sn                        ;T=2c
+CODE:CODE:0161  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+CODE:CODE:0162  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+CODE:CODE:0163  00              NOP                                                  ;T=1c
+CODE:CODE:0164  97              CLR         C                                       ;T=1c
+CODE:CODE:0165  8674            JNI         vint_in_k1_range                        ;T=2c
+CODE:CODE:0167  b5              CPL         F1                                      
+                            ;Here, Vint is outside of K1 range
+                            ;this means we'll enable Sn+ or Sn-
+                            ;switch (depends on sign of Vint).
+                            ;We set F1=1 to remember the fact
+                            ;that Sn is enabled.
+                            ;
+                            ;Now, depending on Vint sign we enable
+                            ;either Sn+ or Sn- in an attempt
+                            ;to bring Vint back into K1 range.
+CODE:CODE:0168  466f            JNT1        vint_positive_out_of_k1                 
+                            vint_negative_out_of_k1:      
+CODE:CODE:016a  a7              CPL         C                                       ;C=1
+CODE:CODE:016b  8a08            ORL         P2,#0x8                                 ;Activate Sn-
+CODE:CODE:016d  2453            JMP         T1_loop.2                               
+                            vint_positive_out_of_k1:      ;XREF[1,0]:   CODE:0168
+CODE:CODE:016f  00              NOP                                                  ;C=0 here
+CODE:CODE:0170  8a02            ORL         P2,#0x2                                 ;Activate Sn+
+CODE:CODE:0172  2453            JMP         T1_loop.2                               
+                            vint_in_k1_range:             ;XREF[1,0]:   CODE:0165
+CODE:CODE:0174  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+CODE:CODE:0175  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T=2c
+CODE:CODE:0176  2452            JMP         T1_loop.1                               ;T=2c
+                            skip2cyc.2:                   ;XREF[1,0]:   CODE:0153
+CODE:CODE:0178  2457            JMP         skip2cyc.2_return                       
+                            wait_for_sine_negedge:        ;XREF[2,0]:   CODE:013e,CODE:017b
+CODE:CODE:017a  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:017b  f27a            JB0x7       wait_for_sine_negedge                   ;while(SINE==1);
+CODE:CODE:017d  2446            JMP         T1_begin                                ;SINE==0 here
+                            check_for_sine_negedge:       ;XREF[1,0]:   CODE:0158
+CODE:CODE:017f  37              CPL         A                                       
+CODE:CODE:0180  f2b0            JB0x7       sine_edge_detected                      
+CODE:CODE:0182  245e            JMP         sine_edge_not_detected                  
+                            handle_active_Sn:             ;XREF[1,0]:   CODE:015f
+CODE:CODE:0184  f692            JC          handle_active_Snn                       
+                            handle_active_Snp:            
+CODE:CODE:0186  ea9e            DJNZ        R2,skip2cyc.0                           
+CODE:CODE:0188  cb              DEC         R3                                      
+CODE:CODE:0189  00              NOP                                                  
+                            ;------
+                            ;{R3,R2} = DJNZ_DEC({R3,R2})
+                            ;{R3,R2} counts number of loop intervals
+                            ;spent in T1 integration phase with
+                            ;Sn+ activated
+                            ;
+                            ;When R2 & 0xF becomes 0, that is after 15
+                            ;loops with Sn enabled during the first time,
+                            ;and after 16 iterations the second time
+                            ;and later, we disable Sn switch.
+                            skip2cyc.0_return:            ;XREF[1,0]:   CODE:019e
+CODE:CODE:018a  fa              MOV         A,R2                                    
+CODE:CODE:018b  530f            ANL         A,#0xf                                  
+CODE:CODE:018d  c64f            JZ          T1_loop.0.disable_Sn_switches           
+CODE:CODE:018f  00              NOP                                                  
+CODE:CODE:0190  2452            JMP         T1_loop.1                               
+                            handle_active_Snn:            ;XREF[1,0]:   CODE:0184
+CODE:CODE:0192  eca0            DJNZ        R4,skip2cyc.1                           
+CODE:CODE:0194  cd              DEC         R5                                      
+CODE:CODE:0195  00              NOP                                                  
+                            ;------
+                            ;{R5,R4} = DJNZ_DEC({R5,R4})
+                            ;{R5,R4} counts number of loop intervals
+                            ;spent in T1 integration phase with
+                            ;Sn- activated
+                            ;
+                            ;When R4 & 0xF becomes 0, that is after 15
+                            ;loops with Sn enabled during the first time,
+                            ;and after 16 iterations the second time
+                            ;and later, we disable Sn switch.
+                            skip2cyc.1_return:            ;XREF[1,0]:   CODE:01a0
+CODE:CODE:0196  fc              MOV         A,R4                                    
+CODE:CODE:0197  530f            ANL         A,#0xf                                  
+CODE:CODE:0199  c64f            JZ          T1_loop.0.disable_Sn_switches           
+CODE:CODE:019b  00              NOP                                                  
+CODE:CODE:019c  2452            JMP         T1_loop.1                               
+                            skip2cyc.0:                   ;XREF[1,0]:   CODE:0186
+CODE:CODE:019e  248a            JMP         skip2cyc.0_return                       
+                            skip2cyc.1:                   ;XREF[1,0]:   CODE:0192
+CODE:CODE:01a0  2496            JMP         skip2cyc.1_return                       
+                            T1_end_handle_active_Sn:      ;XREF[1,0]:   CODE:01b4
+CODE:CODE:01a2  f6a9            JC          T1_end_handle_active_Snn                
+                            T1_end_handle_active_Snp:     
+CODE:CODE:01a4  eaae            DJNZ        R2,LAB_CODE_01ae                        
+CODE:CODE:01a6  cb              DEC         R3                                      
+CODE:CODE:01a7  045e            JMP         T1_completed.2                          ;{R3,R2} = DJNZ_DEC({R3,R2})
+                            T1_end_handle_active_Snn:     ;XREF[1,0]:   CODE:01a2
+CODE:CODE:01a9  ecae            DJNZ        R4,LAB_CODE_01ae                        
+CODE:CODE:01ab  cd              DEC         R5                                      
+CODE:CODE:01ac  045e            JMP         T1_completed.2                          ;{R5,R4} = DJNZ_DEC({R5,R4})
+                            LAB_CODE_01ae:                ;XREF[2,0]:   CODE:01a4,CODE:01a9
+CODE:CODE:01ae  045d            JMP         T1_completed.1                          
+                            sine_edge_detected:           ;XREF[2,0]:   CODE:015b,CODE:0180
+CODE:CODE:01b0  95              CPL         F0                                      ;invert F0 so now we'll wait for
+                                                                                    ;SINE edge of opposite polarity
+                            ;
+                            ;Count sine edges (half-periods) via R1
+                            ;If R1 was 20, then we'll repeat the
+                            ;loop 20 times, or 10 SINE periods,
+                            ;or 200 ms (for 50Hz network)
+                            ;etc..
+                            ;----
+CODE:CODE:01b1  e95f            DJNZ        R1,sine_edge_detected_and_is_not_last...
+                            ;----
+                            ;T1 interval complete -> break out from
+                            ;the loop.
+CODE:CODE:01b3  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:01b4  76a2            JF1         T1_end_handle_active_Sn                 
+CODE:CODE:01b6  045b            JMP         T1_completed.0                          
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void test_mode26_Snul(void)
+                                                          ;XREF[1,0]:   CODE:029b
+CODE:CODE:01b8  231a            MOV         A,#0x1a                                 
+CODE:CODE:01ba  54fe            CALL        set_mode                                ;Set mode 26
+CODE:CODE:01bc  2320            MOV         A,#0x20                                 
+CODE:CODE:01be  3a              OUTL        P2,A                                    ;Snul enabled
+                                                                                    ;Other S* disabled
+CODE:CODE:01bf  040e            JMP         main_loop                               
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void test_comparator_K2(void)
+                                                          ;XREF[1,0]:   CODE:02ab
+CODE:CODE:01c1  2320            MOV         A,#0x20                                 
+CODE:CODE:01c3  3a              OUTL        P2,A                                    ;Snul ON
+                            test_comparator_K2_loop.0:    ;XREF[1,0]:   CODE:01da
+CODE:CODE:01c4  2310            MOV         A,#0x10                                 
+CODE:CODE:01c6  3a              OUTL        P2,A                                    ;Sn1- ON
+                            vint_neg_loop.0:              ;XREF[1,0]:   CODE:01c9
+CODE:CODE:01c7  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:01c9  56c7            JT1         vint_neg_loop.0                         ;Wait till Vint becomes > 0V
+                            vint_in_k2_loop.0:            ;XREF[1,0]:   CODE:01cd
+CODE:CODE:01cb  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:01cd  26cb            JNT0        vint_in_k2_loop.0                       ;Wait till Vint goes out of
+                                                                                    ;K2 range
+CODE:CODE:01cf  2304            MOV         A,#0x4                                  
+CODE:CODE:01d1  3a              OUTL        P2,A                                    ;Sn1+ ON
+                            vint_pos_loop.0:              ;XREF[1,0]:   CODE:01d4
+CODE:CODE:01d2  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:01d4  46d2            JNT1        vint_pos_loop.0                         ;Wait till Vint becomes < 0V
+                            vint_in_k2_loop.1:            ;XREF[1,0]:   CODE:01d8
+CODE:CODE:01d6  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:01d8  26d6            JNT0        vint_in_k2_loop.1                       ;Wait till Vint goes out of
+                                                                                    ;K2 range
+CODE:CODE:01da  24c4            JMP         test_comparator_K2_loop.0               
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void test_mode27_28_Sx_Snul(void)
+                                                          ;XREF[2,0]:   CODE:01ea,CODE:02ad
+CODE:CODE:01dc  231b            MOV         A,#0x1b                                 
+CODE:CODE:01de  54fe            CALL        set_mode                                ;Set mode 27
+CODE:CODE:01e0  34ec            CALL        test_dly_Sx_dly_Snul_dly                ;void test_dly_Sx_dly_Snul_dly(void)
+CODE:CODE:01e2  231c            MOV         A,#0x1c                                 
+CODE:CODE:01e4  54fe            CALL        set_mode                                ;Set mode 28
+CODE:CODE:01e6  34ec            CALL        test_dly_Sx_dly_Snul_dly                ;void test_dly_Sx_dly_Snul_dly(void)
+CODE:CODE:01e8  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:01ea  24dc            JMP         test_mode27_28_Sx_Snul                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void test_dly_Sx_dly_Snul_dly(void)
+                                                          ;XREF[2,0]:   CODE:01e0,CODE:01e6
+CODE:CODE:01ec  bb09            MOV         R3,#0x9                                 
+CODE:CODE:01ee  54f4            CALL        delay_ms                                ;Delay 9 ms
+CODE:CODE:01f0  2301            MOV         A,#0x1                                  
+CODE:CODE:01f2  3a              OUTL        P2,A                                    ;Sx ON
+CODE:CODE:01f3  bb02            MOV         R3,#0x2                                 
+CODE:CODE:01f5  54f4            CALL        delay_ms                                ;Delay 2 ms
+CODE:CODE:01f7  2320            MOV         A,#0x20                                 
+CODE:CODE:01f9  3a              OUTL        P2,A                                    ;Snul ON
+CODE:CODE:01fa  bb09            MOV         R3,#0x9                                 
+CODE:CODE:01fc  54f4            CALL        delay_ms                                ;Delay 9 ms
+CODE:CODE:01fe  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void comm_send_1byte(void)
+                            ;This function transmits byte from A
+                            ;in MSB-first order via DATA_OUT pin,
+                            ;signaling readiness to transmit by setting
+                            ;DATA_OUT 1->0, and starting transmission
+                            ;almost immediately when RDY_IN goes 1->0.
+                            ;
+                            ;9 bits are transmitted:
+                            ;{1'b1, A[7:0]}
+                            ;
+                            ;First bit - a start bit - makes DATA_OUT
+                            ;to go 0->1 and synchronizes receiver.
+                            ;
+                            ;Duration of each bit is exactly 100us.
+                                                          ;XREF[6,0]:   CODE:0044,CODE:0047,CODE:004a,CODE:004f
+                                                          ;             CODE:0053,CODE:02b3
+CODE:CODE:01ff  a8              MOV         R0,A                                    
+CODE:CODE:0200  b908            MOV         R1,#0x8                                 
+CODE:CODE:0202  8901            ORL         P1,#0x1                                 ;Set DATA_OUT=0, RDY_OUT=nc
+                            wait_for_rdyin_0:             ;XREF[1,0]:   CODE:020a
+CODE:CODE:0204  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:0205  37              CPL         A                                       
+CODE:CODE:0206  d20c            JB0x6       rdyin_is_0                              
+CODE:CODE:0208  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+                            ;timing of this loop is not important,
+                            ;since timing-critical part of transmission
+                            ;begins only when DATA_OUT goes 0->1
+CODE:CODE:020a  4404            JMP         wait_for_rdyin_0                        
+                            ;DATA_OUT goes 0->1 in a few us
+                            ;after RDY_IN==0, acting as a
+                            ;start bit
+                            rdyin_is_0:                   ;XREF[1,0]:   CODE:0206
+CODE:CODE:020c  99fe            ANL         P1,#0xfe                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=nc
+CODE:CODE:020e  ba0f            MOV         R2,#0xf                                 ;T 5us
+                            delay0:                       ;XREF[1,0]:   CODE:0210
+CODE:CODE:0210  ea10            DJNZ        R2,delay0                               ;T 75us
+CODE:CODE:0212  00              NOP                                                  ;T 2.5us
+CODE:CODE:0213  f8              MOV         A,R0                                    ;T 2.5us
+                            ;----
+                            ;data is transmitted MSB first,
+                            ;8 bits total
+                            ;
+                            write_data_bit:               ;XREF[1,0]:   CODE:0224
+CODE:CODE:0214  f7              RLC         A                                       ;T 2.5us
+CODE:CODE:0215  00              NOP                                                  ;T 2.5us
+                            ;----
+                            ;First data bit appears on DATA_OUT
+                            ;in =100us after DATA_OUT went 0->1
+                            ;to transmit start bit
+CODE:CODE:0216  e61c            JNC         data_is_0                               ;T 5us
+CODE:CODE:0218  99fe            ANL         P1,#0xfe                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=nc
+CODE:CODE:021a  4420            JMP         cont                                    ;T 5us
+                            data_is_0:                    ;XREF[1,0]:   CODE:0216
+CODE:CODE:021c  8901            ORL         P1,#0x1                                 ;T 5us
+                                                                                    ;Set DATA_OUT=0, RDY_OUT=nc
+CODE:CODE:021e  00              NOP                                                  ;T 2.5us
+CODE:CODE:021f  00              NOP                                                  ;T 2.5us
+                            cont:                         ;XREF[1,0]:   CODE:021a
+CODE:CODE:0220  ba0e            MOV         R2,#0xe                                 ;T 5us
+                            LAB_CODE_0222:                ;XREF[1,0]:   CODE:0222
+CODE:CODE:0222  ea22            DJNZ        R2,LAB_CODE_0222                        ;T 70us
+CODE:CODE:0224  e914            DJNZ        R1,write_data_bit                       ;T 5us
+                            ;----
+                            ;Above loop repeats 8 times. Interval of the
+                            ;loop is exactly 100us, giving interface bit
+                            ;clock = 10000 bits/s
+                            ;
+                            ;Below NOPs ensure correct duration of
+                            ;last transmitted bit: 100us
+CODE:CODE:0226  00              NOP                                                  ;T 2.5us
+CODE:CODE:0227  00              NOP                                                  ;T 2.5us
+CODE:CODE:0228  00              NOP                                                  ;T 2.5us
+CODE:CODE:0229  00              NOP                                                  ;T 2.5us
+CODE:CODE:022a  99fa            ANL         P1,#0xfa                                ;T 5us
+                                                                                    ;Set DATA_OUT=1, RDY_OUT=1
+CODE:CODE:022c  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void comm_recv_1byte(void)
+                            ;This function receives 8 bits of data
+                            ;in MSB-first order from DATA_IN pin
+                            ;and puts them into A register.
+                            ;
+                            ;It waits for DATA_IN to go 0 (transmitter
+                            ;signaling that it wants to transmit), and
+                            ;in a few us sets RDY_OUT 1->0, signaling
+                            ;readiness to receive.
+                            ;
+                            ;Then it waits for DATA_IN to go 0->1,
+                            ;marking the start bit of a transmission
+                            ;(which is always 1'b1). Exactly 157.5us
+                            ;after DATA_IN posedge it samples first
+                            ;bit of data, and then it samples 7 other
+                            ;bits of data with exactly 100us interval.
+                            ;
+                            ;After all bits have been sampled, it sets
+                            ;RDY_OUT 0->1 and returns.
+                            ;
+                            ;NOTE: 157.5us seems like a bug, by all means
+                            ;it should be 150us... This offsets bit
+                            ;sampling times by +7.5us, which is still
+                            ;almost at a mid-point, so not a big deal.
+                                                          ;XREF[3,0]:   CODE:000e,CODE:022e,CODE:02b1
+CODE:CODE:022d  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:022e  922d            JB0x4       comm_recv_1byte                         ;wait till DATA_IN==0
+CODE:CODE:0230  b800            MOV         R0,#0x0                                 
+CODE:CODE:0232  b908            MOV         R1,#0x8                                 
+CODE:CODE:0234  97              CLR         C                                       
+CODE:CODE:0235  8904            ORL         P1,#0x4                                 ;set RDY_OUT=0, DATA_OUT=nc
+                            wait_for_datain_H:            ;XREF[1,0]:   CODE:0239
+CODE:CODE:0237  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T 5us
+CODE:CODE:0238  37              CPL         A                                       ;T 2.5us
+CODE:CODE:0239  9237            JB0x4       wait_for_datain_H                       ;T 5us
+                                                                                    ;wait till DATA_IN==1
+CODE:CODE:023b  ba0f            MOV         R2,#0xf                                 ;T 5us
+                            delay0:                       ;XREF[1,0]:   CODE:023d
+CODE:CODE:023d  ea3d            DJNZ        R2,delay0                               ;T 75us
+                            read_data_bit:                ;XREF[1,0]:   CODE:0251
+CODE:CODE:023f  ba0c            MOV         R2,#0xc                                 ;T 5us
+                            delay1:                       ;XREF[1,0]:   CODE:0241
+CODE:CODE:0241  ea41            DJNZ        R2,delay1                               ;T 60us
+                            ;NOTE:
+                            ;1st data bit is read 157.5us after
+                            ;beginning of start bit
+                            ;(that is, after DATA_IN posedge when
+                            ;RDY_OUT=0)
+                            ;
+                            ;Each consecutive data bit is read in
+                            ;100 us after the previous one
+                            ;----
+CODE:CODE:0243  09              IN          A,P1=>PORT:DAT_PORT_01                  ;T 5us
+CODE:CODE:0244  37              CPL         A                                       ;T 2.5us
+                                                                                    ;A[4]=~DATA_IN
+CODE:CODE:0245  924a            JB0x4       data_is_0                               ;T 5us
+                                                                                    ;jump if DATA_IN==0
+                            data_is_1:                    
+CODE:CODE:0247  18              INC         R0                                      ;T 2.5us
+                                                                                    ;if (DATA_IN) R0++
+CODE:CODE:0248  444d            JMP         skip_nops                               ;T 5us
+                            data_is_0:                    ;XREF[1,0]:   CODE:0245
+CODE:CODE:024a  00              NOP                                                  ;compensate timing of INC/JMP above
+                                                                                    ;T 2.5us
+CODE:CODE:024b  00              NOP                                                  ;T 2.5us
+CODE:CODE:024c  00              NOP                                                  ;T 2.5us
+                            skip_nops:                    ;XREF[1,0]:   CODE:0248
+CODE:CODE:024d  f8              MOV         A,R0                                    ;T 2.5us
+CODE:CODE:024e  f7              RLC         A                                       ;T 2.5us
+CODE:CODE:024f  a8              MOV         R0,A                                    ;T 2.5us
+                                                                                    ;R0<<=1
+CODE:CODE:0250  00              NOP                                                  ;T 2.5us
+CODE:CODE:0251  e93f            DJNZ        R1,read_data_bit                        ;T 5us
+                            ;
+                            ;Above repeat loop 8 times to get 8 bits;
+                            ;timing of the loop determines bit clock
+                            ;and is carefully controlled by NOPs
+                            ;where needed.
+                            ;
+                            ;Period of one loop is exactly 100us,
+                            ;no matter which jumps it took,
+                            ;resulting in 10000 bit/s bit clock.
+                            ;----
+                            ;
+CODE:CODE:0253  99fa            ANL         P1,#0xfa                                ;set RDY_OUT=1, DATA_OUT=1
+CODE:CODE:0255  67              RRC         A                                       ;compensate one unneeded RLC
+                            ;A contains 8 received data bits
+                            ;read MSB-first from DATA_IN
+                            ;----
+CODE:CODE:0256  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void write_mreg_from_ram(void)
+                                                          ;XREF[2,0]:   CODE:0340,CODE:0366
+CODE:CODE:0257  be80            MOV         R6,#0x80                                ;R6 - stores BUS value
+                                                                                    ; MREG_WD=1
+                                                                                    ; MREG_DATA=0000
+                                                                                    ; MREG_ADDR=000
+                            ;The loop runs for 8 iterations, uses RLC
+                            ;for left shift and JC for break. Sort of:
+                            ; R7=1;
+                            ; while(1) {
+                            ;  ... stuff ...
+                            ;  C, R7 = (R7<<1) | C;
+                            ;  if(C) break;
+                            ; }
+                            ;
+                            ;
+                            ;C R7
+                            ;0 0000.0010 - after 1 iter
+                            ;...
+                            ;0 1000.0000 - after 7 iter
+                            ;1 0000.0000 - after 8 iter -> break
+                            ;----
+CODE:CODE:0259  bf01            MOV         R7,#0x1                                 ;R7=1
+                            ;
+                            ;
+                            ;DATA:3c~3f stores MREG map:
+                            ;   u8 mreg_map[4];
+                            ;Outputs of MREG are as follows:
+                            ;  MREG_Q[7:0] = mreg_map[0];
+                            ;  MREG_Q[15:8] = mreg_map[1];
+                            ;  MREG_Q[23:16] = mreg_map[2];
+                            ;  MREG_Q[31:24] = mreg_map[3];
+                            mreg_write_loop:              ;XREF[1,0]:   CODE:028d
+CODE:CODE:025b  b83b            MOV         R0,#0x3b                                ;DATA:3b (after INC becomes DATA:3c)
+CODE:CODE:025d  548f            CALL        check_bit_in_mreg_map                   ;void check_bit_in_mreg_map(void)
+CODE:CODE:025f  c665            JZ          data0_is_not_set                        ;Jump if (R7 & mreg_map[0])==0
+                                                                                    ;NOTE: R7 is one-hot and is
+                                                                                    ;used to select a single bit!
+CODE:CODE:0261  2308            MOV         A,#0x8                                  
+CODE:CODE:0263  4e              ORL         A,R6                                    
+CODE:CODE:0264  ae              MOV         R6,A                                    ;R6 |= 1<<3 (MBUS_DATA[0]=1)
+                            data0_is_not_set:             ;XREF[1,0]:   CODE:025f
+CODE:CODE:0265  548f            CALL        check_bit_in_mreg_map                   ;void check_bit_in_mreg_map(void)
+CODE:CODE:0267  c66d            JZ          data1_is_not_set                        ;Jump if (R7 & mreg_map[1])==0
+CODE:CODE:0269  2310            MOV         A,#0x10                                 
+CODE:CODE:026b  4e              ORL         A,R6                                    
+CODE:CODE:026c  ae              MOV         R6,A                                    ;R6 |= 1<<4 (MBUS_DATA[1]=1)
+                            data1_is_not_set:             ;XREF[1,0]:   CODE:0267
+CODE:CODE:026d  548f            CALL        check_bit_in_mreg_map                   ;void check_bit_in_mreg_map(void)
+CODE:CODE:026f  c675            JZ          data2_is_not_set                        ;Jump if (R7 & mreg_map[2])==0
+CODE:CODE:0271  2320            MOV         A,#0x20                                 
+CODE:CODE:0273  4e              ORL         A,R6                                    
+CODE:CODE:0274  ae              MOV         R6,A                                    ;R6 |= 1<<5 (MBUS_DATA[2]=1)
+                            data2_is_not_set:             ;XREF[1,0]:   CODE:026f
+CODE:CODE:0275  548f            CALL        check_bit_in_mreg_map                   ;void check_bit_in_mreg_map(void)
+CODE:CODE:0277  c67b            JZ          data3_is_not_set                        ;Jump if (R7 & mreg_map[3])==0
+CODE:CODE:0279  2340            MOV         A,#0x40                                 
+                            ;
+                            ;NOTE: we could've ended here only after
+                            ;checking if data3 bit needs to be set.
+                            ;If yes, A=0x40, BUS=R6|A=R6|DATA3
+                            ;If not, A=0 because we got here via JZ!
+                            ;   so BUS=R6 - and bit is not set
+                            data3_is_not_set:             ;XREF[1,0]:   CODE:0277
+CODE:CODE:027b  4e              ORL         A,R6                                    ;A = R6|1<<6 if data3 should be set
+                                                                                    ;else
+                                                                                    ;A = R6
+                                                                                    ;
+CODE:CODE:027c  02              OUTL        BUS,A                                   ;BUS=0x80|(data<<3)|addr
+CODE:CODE:027d  537f            ANL         A,#0x7f                                 
+CODE:CODE:027f  02              OUTL        BUS,A                                   ;BUS=(data<<3)|addr, MREG write strobe
+CODE:CODE:0280  4380            ORL         A,#0x80                                 
+CODE:CODE:0282  02              OUTL        BUS,A                                   ;BUS=0x80|(data<<3)|addr
+CODE:CODE:0283  ff              MOV         A,R7                                    
+CODE:CODE:0284  f7              RLC         A                                       ;assuming C=0
+                                                                                    ;A=R7<<1
+                                                                                    ;C=R7>>7
+CODE:CODE:0285  f692            JC          check_bit_in_mreg_map::return           ;if R7[7] was 1, return
+CODE:CODE:0287  af              MOV         R7,A                                    ;R7=R7<<1
+CODE:CODE:0288  fe              MOV         A,R6                                    
+CODE:CODE:0289  5387            ANL         A,#0x87                                 ;A=0x80 | addr
+                                                                                    ;keeps MREG WD and ADDR untouched
+                                                                                    ;zeroes MREG DATA
+CODE:CODE:028b  17              INC         A                                       ;A=0x80 | (addr++)
+                                                                                    ;increments ADDR on the bus
+CODE:CODE:028c  ae              MOV         R6,A                                    ;R6=0x80 | (addr++)
+CODE:CODE:028d  445b            JMP         mreg_write_loop                         
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void check_bit_in_mreg_map(void)
+                                                          ;XREF[4,0]:   CODE:025d,CODE:0265,CODE:026d,CODE:0275
+CODE:CODE:028f  18              INC         R0                                      
+CODE:CODE:0290  f0              MOV         A,@R0                                   
+CODE:CODE:0291  5f              ANL         A,R7                                    ;A = R7 & *(++R0)
+                            return:                       ;XREF[1,0]:   CODE:0285
+CODE:CODE:0292  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void run_test(void)
+                            ;###################################
+                            ;
+                            ;######## ########  ######  ######## 
+                            ;   ##    ##       ##    ##    ##    
+                            ;   ##    ##       ##          ##    
+                            ;   ##    ######    ######     ##    
+                            ;   ##    ##             ##    ##    
+                            ;   ##    ##       ##    ##    ##    
+                            ;   ##    ########  ######     ##    
+                            ;
+                            ;###################################
+                            ;
+                            ;Programs to be used during repair
+                            ;and adjustment of D1639 board.
+                            ;
+                            ;cmd:
+                            ;  {1'b1, arg[3:0], 3'bXXX}
+                            ;A:
+                            ;  {1'b0, arg[3:0], 3'b0}
+                            ;
+                            ;Above arg >= 1
+                            ;----
+                                                          ;XREF[1,0]:   CODE:003d
+CODE:CODE:0293  e7              RL          A                                       
+CODE:CODE:0294  47              SWAP        A                                       ;A={4'b0, arg[3:0]}
+CODE:CODE:0295  07              DEC         A                                       
+CODE:CODE:0296  c6af            JZ          test_comm                               ;arg==1
+CODE:CODE:0298  07              DEC         A                                       
+CODE:CODE:0299  969d            JNZ         arg_gt_2                                
+CODE:CODE:029b  24b8            JMP         test_mode26_Snul                        ;arg==2
+                            arg_gt_2:                     ;XREF[1,0]:   CODE:0299
+CODE:CODE:029d  07              DEC         A                                       
+CODE:CODE:029e  96a2            JNZ         arg_gt_3                                
+CODE:CODE:02a0  64d8            JMP         test_Snp_Snn_switches                   ;arg==3
+                            arg_gt_3:                     ;XREF[1,0]:   CODE:029e
+CODE:CODE:02a2  07              DEC         A                                       
+CODE:CODE:02a3  c6b9            JZ          test_Sn1p_Sn1n_switches                 ;arg==4
+CODE:CODE:02a5  07              DEC         A                                       
+CODE:CODE:02a6  c6d9            JZ          test_comparator_K1                      ;arg==5
+CODE:CODE:02a8  07              DEC         A                                       
+CODE:CODE:02a9  96ad            JNZ         arg_gt_6                                
+CODE:CODE:02ab  24c1            JMP         test_comparator_K2                      ;arg==6
+                            arg_gt_6:                     ;XREF[1,0]:   CODE:02a9
+CODE:CODE:02ad  24dc            JMP         test_mode27_28_Sx_Snul                  ;arg>=7
+                            ;
+                            ;---------
+                            ;> test_comm
+                            ;
+                            ;Rx byte and echo it back via Tx 255 times
+                            ;---------
+                            test_comm:                    ;XREF[1,0]:   CODE:0296
+CODE:CODE:02af  bbff            MOV         R3,#0xff                                
+                            test_comm_loop.0:             ;XREF[1,0]:   CODE:02b5
+CODE:CODE:02b1  542d            CALL        comm_recv_1byte                         ;void comm_recv_1byte(void)
+CODE:CODE:02b3  34ff            CALL        comm_send_1byte                         ;void comm_send_1byte(void)
+CODE:CODE:02b5  ebb1            DJNZ        R3,test_comm_loop.0                     
+CODE:CODE:02b7  040e            JMP         main_loop                               
+                            test_Sn1p_Sn1n_switches:      ;XREF[2,0]:   CODE:02a3,CODE:02d7
+CODE:CODE:02b9  2320            MOV         A,#0x20                                 
+CODE:CODE:02bb  3a              OUTL        P2,A                                    ;Snul ON
+CODE:CODE:02bc  bb05            MOV         R3,#0x5                                 
+CODE:CODE:02be  54f4            CALL        delay_ms                                ;Delay 5 ms
+CODE:CODE:02c0  2304            MOV         A,#0x4                                  
+CODE:CODE:02c2  3a              OUTL        P2,A                                    ;Sn1+ ON
+CODE:CODE:02c3  bb14            MOV         R3,#0x14                                
+CODE:CODE:02c5  54f4            CALL        delay_ms                                ;Delay 20 ms
+CODE:CODE:02c7  2320            MOV         A,#0x20                                 
+CODE:CODE:02c9  3a              OUTL        P2,A                                    ;Snul ON
+CODE:CODE:02ca  bb05            MOV         R3,#0x5                                 
+CODE:CODE:02cc  54f4            CALL        delay_ms                                ;Delay 5 ms
+CODE:CODE:02ce  2310            MOV         A,#0x10                                 
+CODE:CODE:02d0  3a              OUTL        P2,A                                    ;Sn1- ON
+CODE:CODE:02d1  bb14            MOV         R3,#0x14                                
+CODE:CODE:02d3  54f4            CALL        delay_ms                                ;Delay 20 ms
+CODE:CODE:02d5  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:02d7  44b9            JMP         test_Sn1p_Sn1n_switches                 
+                            test_comparator_K1:           ;XREF[1,0]:   CODE:02a6
+CODE:CODE:02d9  2320            MOV         A,#0x20                                 
+CODE:CODE:02db  3a              OUTL        P2,A                                    ;Snul ON
+                            test_comparator_K1_loop.0:    ;XREF[1,0]:   CODE:02f2
+CODE:CODE:02dc  2308            MOV         A,#0x8                                  
+CODE:CODE:02de  3a              OUTL        P2,A                                    ;Sn- ON
+                            vint_neg_loop.0:              ;XREF[1,0]:   CODE:02e1
+CODE:CODE:02df  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:02e1  56df            JT1         vint_neg_loop.0                         ;Wait till Vint becomes > 0V
+                            vint_in_k1_loop.0:            ;XREF[1,0]:   CODE:02e5
+CODE:CODE:02e3  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:02e5  86e3            JNI         vint_in_k1_loop.0                       ;Wait till Vint goes
+                                                                                    ;out of K1 range
+CODE:CODE:02e7  2302            MOV         A,#0x2                                  
+CODE:CODE:02e9  3a              OUTL        P2,A                                    ;Sn+ ON
+                            vint_pos_loop.0:              ;XREF[1,0]:   CODE:02ec
+CODE:CODE:02ea  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:02ec  46ea            JNT1        vint_pos_loop.0                         ;Wait till Wint becomes < 0V
+                            vint_in_k1_loop.1:            ;XREF[1,0]:   CODE:02f0
+CODE:CODE:02ee  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:02f0  86ee            JNI         vint_in_k1_loop.1                       ;Wait till Vint goes out
+                                                                                    ;of K1 range
+CODE:CODE:02f2  44dc            JMP         test_comparator_K1_loop.0               
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void delay_ms(void)
+                                                          ;XREF[13,0]:  CODE:000c,CODE:01ee,CODE:01f5,CODE:01fc
+                                                          ;             CODE:02be,CODE:02c5,CODE:02cc,CODE:02d3
+                                                          ;             CODE:02f8,CODE:03dd,CODE:03e4,CODE:03eb
+                                                          ;             CODE:03f2
+CODE:CODE:02f4  bcc8            MOV         R4,#0xc8                                ;2 cycles
+                            loop:                         ;XREF[1,0]:   CODE:02f6
+CODE:CODE:02f6  ecf6            DJNZ        R4,loop                                 ;400 cycles (2*200)
+CODE:CODE:02f8  ebf4            DJNZ        R3,delay_ms                             ;R3*402 cycles
+                                                                                    ;Delay: R3*1.005ms
+CODE:CODE:02fa  83              RET                                                  
+CODE:CODE:02fb  00              ??          00h                                     
+CODE:CODE:02fc  00              ??          00h                                     
+CODE:CODE:02fd  00              ??          00h                                     
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void set_mode(void)
+                            ;
+                            ;
+                            ;-IN
+                            ;A[7:0] = {2'bXX, fil, mode[4:0]}
+                                                          ;XREF[5,0]:   CODE:0008,CODE:0013,CODE:01ba,CODE:01de
+                                                          ;             CODE:01e4
+CODE:CODE:02fe  85              CLR         F0                                      
+CODE:CODE:02ff  a5              CLR         F1                                      
+CODE:CODE:0300  b203            JB0x5       fil_is_set                              
+                            fil_not_set:                  
+CODE:CODE:0302  95              CPL         F0                                      ;F0 = !fil
+                            fil_is_set:                   ;XREF[1,0]:   CODE:0300
+CODE:CODE:0303  531f            ANL         A,#0x1f                                 ;A=mode, 0<=mode<=31
+CODE:CODE:0305  af              MOV         R7,A                                    ;R7=A=mode
+CODE:CODE:0306  b83c            MOV         R0,#0x3c                                ;R0=&mreg_map
+CODE:CODE:0308  0306            ADD         A,#0x6                                  
+CODE:CODE:030a  b242            JB0x5       handle_mode_26to31                      ;Jump if mode>=26
+                                                                                    ;(man man man, why not just JC??)
+                            ;
+                            ;Below code implements special logic for
+                            ;Re13 and Re14 current shunt relays.
+                            ;
+                            ;if mode >= 20 and (re13 or re14):
+                            ;   re13 = 1
+                            ;   re14 = 1
+                            ;else:
+                            ;   re13, re14 = mode_table[mode].re13_14
+                            ;
+                            ;The manual mentions that this is a feature
+                            ;that makes BOTH Re13/14 to turn on to 
+                            ;maintain a low-resistance current path
+                            ;through diodes (but not through the
+                            ;measurement shunt!) when multimeter performs
+                            ;input calibration while it's in AMPS
+                            ;measurement mode. AMPS mode is detected by
+                            ;checking whether any of Re13/14 is on, and
+                            ;input calibration modes all have indices
+                            ;above 20.
+                            ;
+                            ;This also means that to disable Re13/14 one
+                            ;must switch to a non-calibration, non-AMPS
+                            ;mode.
+                            ;
+                            ;NOTE: don't forget that Re13, Re14 control
+                            ;signals are inverted. 0 means relay is on,
+                            ;1 means relay is off.
+                            handle_mode_0to25:            
+CODE:CODE:030c  b93e            MOV         R1,#0x3e                                
+CODE:CODE:030e  f1              MOV         A,@R1=>INTMEM:mreg_map[2]               ;A=mreg_map[2]=Q[23:16]
+CODE:CODE:030f  37              CPL         A                                       
+CODE:CODE:0310  530c            ANL         A,#0xc                                  ;A={0000,~Q[19:18],00}
+CODE:CODE:0312  9615            JNZ         re13re14_activated                      ;Jump if (~Q[18] | ~Q[19])
+CODE:CODE:0314  b5              CPL         F1                                      ;F1=1
+                            re13re14_activated:           ;XREF[1,0]:   CODE:0312
+CODE:CODE:0315  761d            JF1         re13re14.done                           
+CODE:CODE:0317  ff              MOV         A,R7                                    ;A=mode
+CODE:CODE:0318  030c            ADD         A,#0xc                                  
+CODE:CODE:031a  b21d            JB0x5       re13re14.done                           ;jump if 20<=mode<=25
+CODE:CODE:031c  b5              CPL         F1                                      ;F1=1
+                            ;
+                            ;Here,
+                            ;F1 = 0: we force-enable Re13, Re14
+                            ;F1 = 1: take Re13,14 state from mode table
+                            ;
+                            re13re14.done:                ;XREF[2,0]:   CODE:0315,CODE:031a
+CODE:CODE:031d  ff              MOV         A,R7                                    ;A=mode=000x.xxxx
+CODE:CODE:031e  e7              RL          A                                       
+CODE:CODE:031f  e7              RL          A                                       
+CODE:CODE:0320  0368            ADD         A,#0x68                                 ;A = 0x68 + 4*mode
+CODE:CODE:0322  a9              MOV         R1,A                                    ;R1 = 0x68 + 4*mode
+CODE:CODE:0323  a3              MOVP        A,@A                                    
+CODE:CODE:0324  a0              MOV         @R0=>INTMEM:mreg_map,A                  ;mreg_map[0] = ROM[0x368+4*mode]
+CODE:CODE:0325  18              INC         R0                                      
+CODE:CODE:0326  19              INC         R1                                      
+CODE:CODE:0327  f9              MOV         A,R1                                    
+CODE:CODE:0328  a3              MOVP        A,@A                                    ;A = ROM[0x369+4*mode] = Q[15:8]
+CODE:CODE:0329  b62d            JF0         fil_not_set.1                           ;fil_not_set.1
+CODE:CODE:032b  4301            ORL         A,#0x1                                  ;if (fil) Q[8]=S[6]=1;
+                                                                                    ;(enable Re2 on D1639)
+                            fil_not_set.1:                ;XREF[1,0]:   CODE:0329
+CODE:CODE:032d  a0              MOV         @R0=>INTMEM:mreg_map[1],A               ;mreg_map[1] = ROM[0x369+4*mode] | fil
+CODE:CODE:032e  18              INC         R0                                      
+CODE:CODE:032f  19              INC         R1                                      
+CODE:CODE:0330  f9              MOV         A,R1                                    
+CODE:CODE:0331  a3              MOVP        A,@A                                    ;A = ROM[0x36a+4*mode] = Q[23:16]
+CODE:CODE:0332  7636            JF1         re13re14_set_normally                   
+                            re13re14_force_enable:        
+CODE:CODE:0334  53f3            ANL         A,#0xf3                                 ;Q[19:18]=S[17:16]=0
+                                                                                    ;(force-enable Re13~14)
+                            re13re14_set_normally:        ;XREF[1,0]:   CODE:0332
+CODE:CODE:0336  a0              MOV         @R0=>INTMEM:mreg_map[2],A               ;mreg_map[2] = ROM[0x36a+4*mode] & ~R...
+CODE:CODE:0337  18              INC         R0                                      
+CODE:CODE:0338  19              INC         R1                                      
+CODE:CODE:0339  f9              MOV         A,R1                                    
+CODE:CODE:033a  a3              MOVP        A,@A                                    
+CODE:CODE:033b  b63f            JF0         fil_not_set.2                           
+CODE:CODE:033d  4380            ORL         A,#0x80                                 ;if(fil) set Q[31]=S[29]
+                                                                                    ;(T8,I7 on D1638)
+                            fil_not_set.2:                ;XREF[1,0]:   CODE:033b
+CODE:CODE:033f  a0              MOV         @R0=>INTMEM:mreg_map[3],A               ;mreg_map[3] = ROM[0x36b+4*mode] | (f...
+CODE:CODE:0340  4457            JMP         write_mreg_from_ram                     ;void write_mreg_from_ram(void)
+                            ;
+                            ;26<=mode<=31. 
+                            ;
+                            ;These are calibration modes for the ADC
+                            ;board D1639 itself. In these modes,
+                            ;integrating ADC is fed with CAL+, CAL-
+                            ;or GND voltages.
+                            ;
+                            ;Here, Q[2:0] (A[2:0] on schematic) is
+                            ;set in a fixed way:
+                            ;    A[2:0]
+                            ; 26 - 100
+                            ; 27 - 101
+                            ; 28 - 110
+                            ;(below are probably unused, since they
+                            ;are the same as above)
+                            ; 29 - 110
+                            ; 30 - 100
+                            ; 31 - 101
+                            ;
+                            ;In addition to that:
+                            ;1. If Re6~9 (D1642) were enabled
+                            ;   (multimeter was in OHMS mode),
+                            ;   Re2 (D1639) will be disabled.
+                            ;2. +5V BLOK (D1642) supply will be enabled.
+                            ;3. Re6~9 (D1642) will be disabled.
+                            ;
+                            ;I do not understand p.1, but p.2 and 3 make
+                            ;sense - it disconnects floating calibration
+                            ;I/V source from L,H nets of the multimeter
+                            ;so that it can be arbitrarily reconnected
+                            ;to the ADC input.
+                            ;
+                            ;Other MREG signals remain unchanged, so
+                            ;all other relays and switches keep the state
+                            ;they were in prior to calibration.
+                            ;-----
+                            handle_mode_26to31:           ;XREF[1,0]:   CODE:030a
+CODE:CODE:0342  5303            ANL         A,#0x3                                  ;A=(mode+6)&3
+CODE:CODE:0344  ac              MOV         R4,A                                    ;R4 = (mode+6)&0b11
+CODE:CODE:0345  f0              MOV         A,@R0=>INTMEM:mreg_map                  ;A = mreg_map[0] = Q[7:0]
+                                                                                    ;A = {S[5:1], A[2:0]}
+CODE:CODE:0346  53f8            ANL         A,#0xf8                                 ;A = {S[5:1], b000}
+CODE:CODE:0348  ae              MOV         R6,A                                    ;R6 = {S[5:1], b000}
+CODE:CODE:0349  fc              MOV         A,R4                                    
+CODE:CODE:034a  c659            JZ          mode_26_30                              
+CODE:CODE:034c  07              DEC         A                                       
+CODE:CODE:034d  c654            JZ          mode_27_31                              ;I had to write python code
+                                                                                    ;to understand how these jumps
+                                                                                    ;are triggered..
+                            mode_28_29:                   
+CODE:CODE:034f  fe              MOV         A,R6                                    
+CODE:CODE:0350  4306            ORL         A,#0x6                                  ;A[2:0] = 110
+CODE:CODE:0352  645c            JMP         break1                                  
+                            mode_27_31:                   ;XREF[1,0]:   CODE:034d
+CODE:CODE:0354  fe              MOV         A,R6                                    
+CODE:CODE:0355  4305            ORL         A,#0x5                                  ;A[2:0] = 101
+CODE:CODE:0357  645c            JMP         break1                                  
+                            mode_26_30:                   ;XREF[1,0]:   CODE:034a
+CODE:CODE:0359  fe              MOV         A,R6                                    
+CODE:CODE:035a  4304            ORL         A,#0x4                                  ;A[2:0] = 100
+                            break1:                       ;XREF[2,0]:   CODE:0352,CODE:0357
+CODE:CODE:035c  a0              MOV         @R0=>INTMEM:mreg_map,A                  ;mreg_map[0] = Q[7:0]
+CODE:CODE:035d  18              INC         R0                                      
+CODE:CODE:035e  f0              MOV         A,@R0=>INTMEM:mreg_map[1]               ;A = mreg_map[1] = Q[15:8]
+CODE:CODE:035f  b263            JB0x5       re6to9_were_off                         
+                            re6to9_were_on:               
+CODE:CODE:0361  53fe            ANL         A,#0xfe                                 ;if Q[13]=S[11]=0
+                                                                                    ;(Re6~9 on D1642 enabled)
+                                                                                    ;set Q[8]=S[6]=0
+                                                                                    ;(disable Re2 on D1639)
+                            re6to9_were_off:              ;XREF[1,0]:   CODE:035f
+CODE:CODE:0363  4360            ORL         A,#0x60                                 ;set Q[14:13]=S[12:11]=1
+                                                                                    ;On D1642:
+                                                                                    ;- Enable +5V BLOK supply
+                                                                                    ;- Disable Re6~9
+CODE:CODE:0365  a0              MOV         @R0=>INTMEM:mreg_map[1],A               ;write back mreg_map[1]=Q[15:8]
+                                                                                    ;
+CODE:CODE:0366  4457            JMP         write_mreg_from_ram                     ;void write_mreg_from_ram(void)
+                            tbl_mreg_modes:               
+CODE:CODE:0368  88feff029...    db[26][4]                                           
+   |_CODE:CODE:0368  [0]             db[4]                                               
+      |_CODE:CODE:0368  [0]             db          88h                                     
+      |_CODE:CODE:0369  [1]             db          FEh                                     
+      |_CODE:CODE:036a  [2]             db          FFh                                     
+      |_CODE:CODE:036b  [3]             db          2h                                      
+   |_CODE:CODE:036c  [1]             db[4]                                               
+      |_CODE:CODE:036c  [0]             db          90h                                     
+      |_CODE:CODE:036d  [1]             db          FEh                                     
+      |_CODE:CODE:036e  [2]             db          FFh                                     
+      |_CODE:CODE:036f  [3]             db          2h                                      
+   |_CODE:CODE:0370  [2]             db[4]                                               
+      |_CODE:CODE:0370  [0]             db          A0h                                     
+      |_CODE:CODE:0371  [1]             db          FEh                                     
+      |_CODE:CODE:0372  [2]             db          FFh                                     
+      |_CODE:CODE:0373  [3]             db          2h                                      
+   |_CODE:CODE:0374  [3]             db[4]                                               
+      |_CODE:CODE:0374  [0]             db          10h                                     
+      |_CODE:CODE:0375  [1]             db          7Eh                                     
+      |_CODE:CODE:0376  [2]             db          FFh                                     
+      |_CODE:CODE:0377  [3]             db          2h                                      
+   |_CODE:CODE:0378  [4]             db[4]                                               
+      |_CODE:CODE:0378  [0]             db          20h                                     
+      |_CODE:CODE:0379  [1]             db          FEh                                     
+      |_CODE:CODE:037a  [2]             db          FEh                                     
+      |_CODE:CODE:037b  [3]             db          2h                                      
+   |_CODE:CODE:037c  [5]             db[4]                                               
+      |_CODE:CODE:037c  [0]             db          8h                                      
+      |_CODE:CODE:037d  [1]             db          FEh                                     
+      |_CODE:CODE:037e  [2]             db          FBh                                     
+      |_CODE:CODE:037f  [3]             db          2h                                      
+   |_CODE:CODE:0380  [6]             db[4]                                               
+      |_CODE:CODE:0380  [0]             db          8h                                      
+      |_CODE:CODE:0381  [1]             db          FEh                                     
+      |_CODE:CODE:0382  [2]             db          F7h                                     
+      |_CODE:CODE:0383  [3]             db          2h                                      
+   |_CODE:CODE:0384  [7]             db[4]                                               
+      |_CODE:CODE:0384  [0]             db          91h                                     
+      |_CODE:CODE:0385  [1]             db          DCh                                     
+      |_CODE:CODE:0386  [2]             db          FFh                                     
+      |_CODE:CODE:0387  [3]             db          2h                                      
+   |_CODE:CODE:0388  [8]             db[4]                                               
+      |_CODE:CODE:0388  [0]             db          91h                                     
+      |_CODE:CODE:0389  [1]             db          DAh                                     
+      |_CODE:CODE:038a  [2]             db          FFh                                     
+      |_CODE:CODE:038b  [3]             db          2h                                      
+   |_CODE:CODE:038c  [9]             db[4]                                               
+      |_CODE:CODE:038c  [0]             db          A1h                                     
+      |_CODE:CODE:038d  [1]             db          DAh                                     
+      |_CODE:CODE:038e  [2]             db          FFh                                     
+      |_CODE:CODE:038f  [3]             db          2h                                      
+   |_CODE:CODE:0390  [10]            db[4]                                               
+      |_CODE:CODE:0390  [0]             db          A1h                                     
+      |_CODE:CODE:0391  [1]             db          D6h                                     
+      |_CODE:CODE:0392  [2]             db          FFh                                     
+      |_CODE:CODE:0393  [3]             db          2h                                      
+   |_CODE:CODE:0394  [11]            db[4]                                               
+      |_CODE:CODE:0394  [0]             db          A1h                                     
+      |_CODE:CODE:0395  [1]             db          CEh                                     
+      |_CODE:CODE:0396  [2]             db          FFh                                     
+      |_CODE:CODE:0397  [3]             db          2h                                      
+   |_CODE:CODE:0398  [12]            db[4]                                               
+      |_CODE:CODE:0398  [0]             db          A1h                                     
+      |_CODE:CODE:0399  [1]             db          DEh                                     
+      |_CODE:CODE:039a  [2]             db          FFh                                     
+      |_CODE:CODE:039b  [3]             db          2h                                      
+   |_CODE:CODE:039c  [13]            db[4]                                               
+      |_CODE:CODE:039c  [0]             db          42h                                     
+      |_CODE:CODE:039d  [1]             db          FEh                                     
+      |_CODE:CODE:039e  [2]             db          AFh                                     
+      |_CODE:CODE:039f  [3]             db          36h                                     
+   |_CODE:CODE:03a0  [14]            db[4]                                               
+      |_CODE:CODE:03a0  [0]             db          42h                                     
+      |_CODE:CODE:03a1  [1]             db          FEh                                     
+      |_CODE:CODE:03a2  [2]             db          AFh                                     
+      |_CODE:CODE:03a3  [3]             db          22h                                     
+   |_CODE:CODE:03a4  [15]            db[4]                                               
+      |_CODE:CODE:03a4  [0]             db          42h                                     
+      |_CODE:CODE:03a5  [1]             db          FEh                                     
+      |_CODE:CODE:03a6  [2]             db          4Fh                                     
+      |_CODE:CODE:03a7  [3]             db          3Ah                                     
+   |_CODE:CODE:03a8  [16]            db[4]                                               
+      |_CODE:CODE:03a8  [0]             db          42h                                     
+      |_CODE:CODE:03a9  [1]             db          FEh                                     
+      |_CODE:CODE:03aa  [2]             db          4Fh                                     
+      |_CODE:CODE:03ab  [3]             db          42h                                     
+   |_CODE:CODE:03ac  [17]            db[4]                                               
+      |_CODE:CODE:03ac  [0]             db          42h                                     
+      |_CODE:CODE:03ad  [1]             db          FEh                                     
+      |_CODE:CODE:03ae  [2]             db          6Fh                                     
+      |_CODE:CODE:03af  [3]             db          53h                                     
+   |_CODE:CODE:03b0  [18]            db[4]                                               
+      |_CODE:CODE:03b0  [0]             db          42h                                     
+      |_CODE:CODE:03b1  [1]             db          FEh                                     
+      |_CODE:CODE:03b2  [2]             db          6Bh                                     
+      |_CODE:CODE:03b3  [3]             db          36h                                     
+   |_CODE:CODE:03b4  [19]            db[4]                                               
+      |_CODE:CODE:03b4  [0]             db          42h                                     
+      |_CODE:CODE:03b5  [1]             db          FEh                                     
+      |_CODE:CODE:03b6  [2]             db          67h                                     
+      |_CODE:CODE:03b7  [3]             db          36h                                     
+   |_CODE:CODE:03b8  [20]            db[4]                                               
+      |_CODE:CODE:03b8  [0]             db          42h                                     
+      |_CODE:CODE:03b9  [1]             db          FEh                                     
+      |_CODE:CODE:03ba  [2]             db          7Fh                                     
+      |_CODE:CODE:03bb  [3]             db          2h                                      
+   |_CODE:CODE:03bc  [21]            db[4]                                               
+      |_CODE:CODE:03bc  [0]             db          42h                                     
+      |_CODE:CODE:03bd  [1]             db          FEh                                     
+      |_CODE:CODE:03be  [2]             db          7Fh                                     
+      |_CODE:CODE:03bf  [3]             db          12h                                     
+   |_CODE:CODE:03c0  [22]            db[4]                                               
+      |_CODE:CODE:03c0  [0]             db          43h                                     
+      |_CODE:CODE:03c1  [1]             db          FEh                                     
+      |_CODE:CODE:03c2  [2]             db          7Fh                                     
+      |_CODE:CODE:03c3  [3]             db          12h                                     
+   |_CODE:CODE:03c4  [23]            db[4]                                               
+      |_CODE:CODE:03c4  [0]             db          Fh                                      
+      |_CODE:CODE:03c5  [1]             db          FEh                                     
+      |_CODE:CODE:03c6  [2]             db          FFh                                     
+      |_CODE:CODE:03c7  [3]             db          2h                                      
+   |_CODE:CODE:03c8  [24]            db[4]                                               
+      |_CODE:CODE:03c8  [0]             db          9h                                      
+      |_CODE:CODE:03c9  [1]             db          7Eh                                     
+      |_CODE:CODE:03ca  [2]             db          FDh                                     
+      |_CODE:CODE:03cb  [3]             db          2h                                      
+   |_CODE:CODE:03cc  [25]            db[4]                                               
+      |_CODE:CODE:03cc  [0]             db          8h                                      
+      |_CODE:CODE:03cd  [1]             db          FEh                                     
+      |_CODE:CODE:03ce  [2]             db          FFh                                     
+      |_CODE:CODE:03cf  [3]             db          2h                                      
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void reset_if_host_req(void)
+                                                          ;XREF[12,0]:  CODE:01c7,CODE:01cb,CODE:01d2,CODE:01d6
+                                                          ;             CODE:01e8,CODE:0208,CODE:02d5,CODE:02df
+                                                          ;             CODE:02e3,CODE:02ea,CODE:02ee,CODE:03f4
+CODE:CODE:03d0  09              IN          A,P1=>PORT:DAT_PORT_01                  ;= ??
+CODE:CODE:03d1  92d7            JB0x4       data_in_is_high                         
+                            data_in_is_low:               
+CODE:CODE:03d3  99fe            ANL         P1,#0xfe                                ;Set:
+                                                                                    ;DATA_OUT=1
+                                                                                    ;RDY_OUT=no change
+CODE:CODE:03d5  040e            JMP         main_loop                               ;Soft-reset by jumping
+                                                                                    ;straight into main loop
+                            data_in_is_high:              ;XREF[1,0]:   CODE:03d1
+CODE:CODE:03d7  83              RET                                                  
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void test_Snp_Snn_switches(void)
+                                                          ;XREF[2,0]:   CODE:02a0,CODE:03f6
+CODE:CODE:03d8  2320            MOV         A,#0x20                                 
+CODE:CODE:03da  3a              OUTL        P2,A                                    ;Snul ON
+CODE:CODE:03db  bb20            MOV         R3,#0x20                                
+CODE:CODE:03dd  54f4            CALL        delay_ms                                ;Delay 32 ms
+CODE:CODE:03df  2302            MOV         A,#0x2                                  
+CODE:CODE:03e1  3a              OUTL        P2,A                                    ;Sn+ ON
+CODE:CODE:03e2  bb02            MOV         R3,#0x2                                 
+CODE:CODE:03e4  54f4            CALL        delay_ms                                ;Delay 2 ms
+CODE:CODE:03e6  2320            MOV         A,#0x20                                 
+CODE:CODE:03e8  3a              OUTL        P2,A                                    ;Snul ON
+CODE:CODE:03e9  bb20            MOV         R3,#0x20                                
+CODE:CODE:03eb  54f4            CALL        delay_ms                                ;Delay 32 ms
+CODE:CODE:03ed  2308            MOV         A,#0x8                                  
+CODE:CODE:03ef  3a              OUTL        P2,A                                    ;Sn- ON
+CODE:CODE:03f0  bb02            MOV         R3,#0x2                                 
+CODE:CODE:03f2  54f4            CALL        delay_ms                                ;Delay 2 ms
+CODE:CODE:03f4  74d0            CALL        reset_if_host_req                       ;void reset_if_host_req(void)
+CODE:CODE:03f6  64d8            JMP         test_Snp_Snn_switches                   
+                            ;************************************************************************************************
+                            ;*                                           FUNCTION                                           *
+                            ;************************************************************************************************
+                            ;void delay_28cyc_70us(void)
+                            ;Together with CALL, this function
+                            ;adds 28 cycle delay. That is, 70us
+                                                          ;XREF[1,0]:   CODE:0146
+CODE:CODE:03f8  be0b            MOV         R6,#0xb                                 ;2 cyc
+                            loop:                         ;XREF[1,0]:   CODE:03fa
+CODE:CODE:03fa  eefa            DJNZ        R6,loop                                 ;22 cyc
+CODE:CODE:03fc  83              RET                                                  ;2 cyc
+CODE:CODE:03fd  00              ??          00h                                     
+CODE:CODE:03fe  00              ??          00h                                     
+CODE:CODE:03ff  00              ??          00h                                     
+                            BANK0_R0:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R1:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R2:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R3:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R4:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R5:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R6:                     
+REG_BANK_0:IN...                ??          ??                                      
+                            BANK0_R7:                     
+REG_BANK_0:IN...                ??          ??                                      
+STACK:INTMEM:08                 ??          ??                                      
+STACK:INTMEM:09                 ??          ??                                      
+STACK:INTMEM:0a                 ??          ??                                      
+STACK:INTMEM:0b                 ??          ??                                      
+STACK:INTMEM:0c                 ??          ??                                      
+STACK:INTMEM:0d                 ??          ??                                      
+STACK:INTMEM:0e                 ??          ??                                      
+STACK:INTMEM:0f                 ??          ??                                      
+STACK:INTMEM:10                 ??          ??                                      
+STACK:INTMEM:11                 ??          ??                                      
+STACK:INTMEM:12                 ??          ??                                      
+STACK:INTMEM:13                 ??          ??                                      
+STACK:INTMEM:14                 ??          ??                                      
+STACK:INTMEM:15                 ??          ??                                      
+STACK:INTMEM:16                 ??          ??                                      
+STACK:INTMEM:17                 ??          ??                                      
+                            BANK1_R0:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R1:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R2:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R3:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R4:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R5:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R6:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            BANK1_R7:                     
+REG_BANK_1:IN...                ??          ??                                      
+                            b_long_T1:                    ;XREF[2,0]:   CODE:002e,CODE:0037
+INTMEM:INTMEM:20                db          ??                                      
+                            t0:                           ;XREF[8,0]:   CODE:00fb,CODE:010f,CODE:0110,CODE:0111
+                                                          ;             CODE:0125,CODE:0127,CODE:0134,CODE:0136
+INTMEM:INTMEM:21                db          ??                                      
+                            k:                            ;XREF[3,0]:   CODE:00f8,CODE:0113,CODE:0115
+INTMEM:INTMEM:22                db          ??                                      
+                            t1:                           
+INTMEM:INTMEM:23                db          ??                                      
+INTMEM:INTMEM:24                ??          ??                                      
+INTMEM:INTMEM:25                ??          ??                                      
+INTMEM:INTMEM:26                ??          ??                                      
+INTMEM:INTMEM:27                ??          ??                                      
+INTMEM:INTMEM:28                ??          ??                                      
+INTMEM:INTMEM:29                ??          ??                                      
+INTMEM:INTMEM:2a                ??          ??                                      
+INTMEM:INTMEM:2b                ??          ??                                      
+INTMEM:INTMEM:2c                ??          ??                                      
+INTMEM:INTMEM:2d                ??          ??                                      
+INTMEM:INTMEM:2e                ??          ??                                      
+INTMEM:INTMEM:2f                ??          ??                                      
+INTMEM:INTMEM:30                ??          ??                                      
+INTMEM:INTMEM:31                ??          ??                                      
+INTMEM:INTMEM:32                ??          ??                                      
+INTMEM:INTMEM:33                ??          ??                                      
+INTMEM:INTMEM:34                ??          ??                                      
+INTMEM:INTMEM:35                ??          ??                                      
+INTMEM:INTMEM:36                ??          ??                                      
+INTMEM:INTMEM:37                ??          ??                                      
+INTMEM:INTMEM:38                ??          ??                                      
+INTMEM:INTMEM:39                ??          ??                                      
+INTMEM:INTMEM:3a                ??          ??                                      
+INTMEM:INTMEM:3b                ??          ??                                      
+                            mreg_map:                     ;XREF[3,6]:   CODE:0324,CODE:0345,CODE:035c,CODE:030e
+                                                          ;             CODE:032d,CODE:0336,CODE:033f,CODE:035e
+                                                          ;             CODE:0365
+INTMEM:INTMEM:3c                db[4]       ??                                      
+   |_INTMEM:INTMEM:3c[0]             db          ??                                      
+   |_INTMEM:INTMEM:3d[1]             db          ??                                      
+   |_INTMEM:INTMEM:3e[2]             db          ??                                      
+   |_INTMEM:INTMEM:3f[3]             db          ??                                      
+                            BUS:                          
+PORT:PORT:00                    ??          ??                                      
+                            DAT_PORT_01:                  ;XREF[23,0]:  CODE:005b,CODE:005c,CODE:005f,CODE:006d
+                                                          ;             CODE:0079,CODE:0081,CODE:0090,CODE:013d
+                                                          ;             CODE:0141,CODE:0152,CODE:0157,CODE:015d
+                                                          ;             CODE:0161,CODE:0162,CODE:0174,CODE:0175
+                                                          ;             CODE:017a,CODE:01b3,CODE:0204,CODE:022d
+                                                          ;             CODE:0237,CODE:0243,CODE:03d0
+PORT:PORT:01                    undefined1  ??                                      
+                            P2:                           
+PORT:PORT:02                    ??          ??                                      
+PORT:PORT:03                    ??          ??                                      
+                            P4:                           
+PORT:PORT:04                    ??          ??                                      
+                            P5:                           
+PORT:PORT:05                    ??          ??                                      
+                            P6:                           
+PORT:PORT:06                    ??          ??                                      
+                            P7:                           
+PORT:PORT:07                    ??          ??                                      

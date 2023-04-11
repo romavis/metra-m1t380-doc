@@ -8,3 +8,6 @@ venv/
 
 # Do not commit Ghidra projects
 ghidra/
+
+# Do not include Sphinx output
+build/
